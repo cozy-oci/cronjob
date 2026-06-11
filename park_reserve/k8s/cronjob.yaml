@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: park-reserve
+spec:
+  # Adjust to the actual application window.
+  schedule: "0 0 3,5,8,9,10,16,18,22,25 * *"
+  timeZone: "Asia/Seoul"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: park-reserve
+              image: docker.io/bahn1075/park-reserve:latest
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                runAsUser: 0
+              envFrom:
+                - secretRef:
+                    name: park-reserve-secret
+              volumeMounts:
+                - name: ssh
+                  mountPath: /root/.ssh
+                  readOnly: true
+          volumes:
+            - name: ssh
+              secret:
+                secretName: park-reserve-ssh
+                defaultMode: 0400

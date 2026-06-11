@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: park-reserve
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cozy-oci/cronjob.git
+    targetRevision: main
+    path: park_reserve/k8s
+    directory:
+      exclude: "secret*.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cronjob
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: mac
+      namespace: cronjob
+      jsonPointers:
+        - /spec/externalName
+        - /spec/clusterIP
+        - /spec/clusterIPs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

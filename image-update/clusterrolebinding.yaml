@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubectl
+subjects:
+  - kind: ServiceAccount
+    name: kubectl
+    namespace: cronjob
+roleRef:
+  kind: ClusterRole
+  name: kubectl
+  apiGroup: rbac.authorization.k8s.io

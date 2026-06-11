@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment and local overrides
+.env
+.env.*
+!.env.example
+*.local
+*.local.yaml
+*.local.yml
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Kubernetes / deployment local secrets and generated values
+k8s/secret.yaml
+k8s/secrets.yaml
+k8s/*secret*.yaml
+k8s/*secrets*.yaml
+k8s/*.secret.yaml
+k8s/*.secret.yml
+k8s/*.secrets.yaml
+k8s/*.secrets.yml
+!k8s/secret.example.yaml
+!k8s/*.example.yaml
+!k8s/*.example.yml
+
+# SSH private keys and local auth material
+id_rsa
+id_dsa
+id_ecdsa
+id_ecdsa_sk
+id_ed25519
+id_ed25519_sk
+*.pem
+*.key
+*.p8
+*.ppk
+known_hosts.local
+ssh_config.local
+
+# Helm / Kustomize generated artifacts
+*.tgz
+charts/*.tgz
+kustomization.lock
+
+# kubeconfig / local cluster context files
+kubeconfig
+*.kubeconfig
+*.kubeconfig.yaml
