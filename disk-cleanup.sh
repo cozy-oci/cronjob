@@ -7,14 +7,14 @@
 # 작성: 2026-02-11
 #
 # OS crontab 예시:
-#   0 3 * * 0  $HOME/cronjob/disk-cleanup.sh >> $HOME/cronjob/logs/disk-cleanup.log 2>&1
+#   0 3 * * 0  /home/opc/cronjob/disk-cleanup.sh >> /home/opc/cronjob/logs/disk-cleanup.log 2>&1
 # ============================================================
 
 set -euo pipefail
 
-export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.nvm/versions/node/v24.13.0/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/home/opc/bin:/home/opc/.local/bin:/home/opc/.nvm/versions/node/v24.13.0/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-LOG_DIR="$HOME/cronjob/logs"
+LOG_DIR="/home/opc/cronjob/logs"
 mkdir -p "$LOG_DIR"
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
@@ -25,9 +25,9 @@ load_discord_env() {
     # cron does not load interactive shell config by default.
     # Import only Discord exports because .zshrc may contain zsh-only syntax.
     # shellcheck source=/dev/null
-    [[ -r $HOME/.park_reserve.env ]] && source <(grep -E '^export DISCORD_TOKEN=' $HOME/.park_reserve.env) || true
+    [[ -r /home/opc/.park_reserve.env ]] && source <(grep -E '^export DISCORD_TOKEN=' /home/opc/.park_reserve.env) || true
     # shellcheck source=/dev/null
-    [[ -r $HOME/.zshrc ]] && source <(grep -E '^export (DISCORD_TOKEN|CHANNEL_UPDATE)=' $HOME/.zshrc) || true
+    [[ -r /home/opc/.zshrc ]] && source <(grep -E '^export (DISCORD_TOKEN|CHANNEL_UPDATE)=' /home/opc/.zshrc) || true
   fi
 }
 
@@ -135,10 +135,10 @@ add_report "3️⃣ dnf autoremove: ${AUTOREMOVE_OUTPUT}"
 # 4. npm 캐시 정리
 # -------------------------------------------------------
 log "[4/9] npm 캐시 정리"
-NPM_BEFORE=$(du -sb $HOME/.npm/_cacache $HOME/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_BEFORE=0
-$HOME/.nvm/versions/node/v24.13.0/bin/npm cache clean --force --silent 2>/dev/null || true
-rm -rf $HOME/.npm/_npx 2>/dev/null || true
-NPM_AFTER=$(du -sb $HOME/.npm/_cacache $HOME/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_AFTER=0
+NPM_BEFORE=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_BEFORE=0
+/home/opc/.nvm/versions/node/v24.13.0/bin/npm cache clean --force --silent 2>/dev/null || true
+rm -rf /home/opc/.npm/_npx 2>/dev/null || true
+NPM_AFTER=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_AFTER=0
 FREED_NPM=$((${NPM_BEFORE:-0} - ${NPM_AFTER:-0}))
 [ "$FREED_NPM" -lt 0 ] && FREED_NPM=0
 add_report "4️⃣ npm 캐시(_cacache+_npx): $(numfmt --to=iec $FREED_NPM) 확보"
@@ -147,15 +147,15 @@ add_report "4️⃣ npm 캐시(_cacache+_npx): $(numfmt --to=iec $FREED_NPM) 확
 # 5. 유저 캐시 정리 (Homebrew, mozilla, pip)
 # -------------------------------------------------------
 log "[5/9] 유저 캐시 정리"
-USER_BEFORE=$(du_bytes $HOME/.cache)
-rm -rf $HOME/.cache/Homebrew/* 2>/dev/null || true
-rm -rf $HOME/.cache/mozilla/* 2>/dev/null || true
-rm -rf $HOME/.cache/pip/* 2>/dev/null || true
-rm -rf $HOME/.cache/node-gyp/* 2>/dev/null || true
-rm -rf $HOME/.cache/bbrew/* 2>/dev/null || true
-rm -rf $HOME/.cache/helm/* 2>/dev/null || true
-rm -rf $HOME/.cache/gnome-software/* 2>/dev/null || true
-USER_AFTER=$(du_bytes $HOME/.cache)
+USER_BEFORE=$(du_bytes /home/opc/.cache)
+rm -rf /home/opc/.cache/Homebrew/* 2>/dev/null || true
+rm -rf /home/opc/.cache/mozilla/* 2>/dev/null || true
+rm -rf /home/opc/.cache/pip/* 2>/dev/null || true
+rm -rf /home/opc/.cache/node-gyp/* 2>/dev/null || true
+rm -rf /home/opc/.cache/bbrew/* 2>/dev/null || true
+rm -rf /home/opc/.cache/helm/* 2>/dev/null || true
+rm -rf /home/opc/.cache/gnome-software/* 2>/dev/null || true
+USER_AFTER=$(du_bytes /home/opc/.cache)
 FREED_USER=$((${USER_BEFORE:-0} - ${USER_AFTER:-0}))
 [ "$FREED_USER" -lt 0 ] && FREED_USER=0
 add_report "5️⃣ 유저 캐시: $(numfmt --to=iec $FREED_USER) 확보"
@@ -164,26 +164,19 @@ add_report "5️⃣ 유저 캐시: $(numfmt --to=iec $FREED_USER) 확보"
 # 6. Docker 미사용 이미지 정리
 # -------------------------------------------------------
 log "[6/9] Docker 미사용 이미지 정리"
-DOCKER_BEFORE_BYTES=$(docker system df --format '{{json .}}' 2>/dev/null | awk -F'"' '/"TotalCount"/{for(i=1;i<=NF;i++) if($i=="Size") print $(i+2)}' || echo 0)
-# prune -a 는 정지된 컨테이너(minikube 등)까지 삭제하므로 사용 금지.
-# dangling 이미지(태그 없는 레이어)와 빌드 캐시만 제거한다.
-DANGLING_OUTPUT=$(docker image prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
-CACHE_OUTPUT=$(docker builder prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
-# 컨테이너(실행 중 + 정지 중 모두)에 연결되지 않은 볼륨만 삭제
-VOLUME_OUTPUT=$(docker volume prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
-DANGLING_FREED=$(echo "$DANGLING_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-CACHE_FREED=$(echo "$CACHE_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-VOLUME_FREED=$(echo "$VOLUME_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-add_report "6️⃣ Docker 정리: dangling=${DANGLING_FREED} volume=${VOLUME_FREED} cache=${CACHE_FREED} 확보"
+DOCKER_BEFORE=$(docker system df --format '{{.Size}}' 2>/dev/null | head -1 || echo "0")
+DOCKER_OUTPUT=$(docker system prune -a -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
+DOCKER_FREED=$(echo "$DOCKER_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
+add_report "6️⃣ Docker 정리: ${DOCKER_FREED} 확보"
 
 # -------------------------------------------------------
 # 7. 패키지 캐시 정리 (dnf + PackageKit) — autoremove 후 마지막에 정리
 # -------------------------------------------------------
 log "[7/9] 패키지 캐시 정리"
-CACHE_BEFORE=$({ sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null || true; } | awk '{s+=$1}END{print s+0}')
+CACHE_BEFORE=$(sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null | awk '{s+=$1}END{print s+0}')
 sudo dnf clean all --quiet 2>/dev/null || true
 sudo rm -rf /var/cache/PackageKit/* 2>/dev/null || true
-CACHE_AFTER=$({ sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null || true; } | awk '{s+=$1}END{print s+0}')
+CACHE_AFTER=$(sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null | awk '{s+=$1}END{print s+0}')
 FREED_CACHE=$((CACHE_BEFORE - CACHE_AFTER))
 [ "$FREED_CACHE" -lt 0 ] && FREED_CACHE=0
 add_report "7️⃣ 패키지 캐시: $(numfmt --to=iec $FREED_CACHE) 확보"
@@ -204,14 +197,14 @@ add_report "8️⃣ /tmp: $(numfmt --to=iec $FREED_TMP) 확보"
 # 9. VSCode Server 캐시 정리
 # -------------------------------------------------------
 log "[9/9] VSCode Server 캐시 정리"
-VSCODE_BEFORE=$(du -sb $HOME/.vscode-server/data/CachedExtensionVSIXs \
-                        $HOME/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_BEFORE=0
+VSCODE_BEFORE=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
+                        /home/opc/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_BEFORE=0
 # 확장 설치 캐시 — VSCode가 필요 시 재다운로드하므로 안전하게 삭제
-rm -rf $HOME/.vscode-server/data/CachedExtensionVSIXs/* 2>/dev/null || true
+rm -rf /home/opc/.vscode-server/data/CachedExtensionVSIXs/* 2>/dev/null || true
 # 서버 로그 삭제
-rm -rf $HOME/.vscode-server/data/logs/* 2>/dev/null || true
-VSCODE_AFTER=$(du -sb $HOME/.vscode-server/data/CachedExtensionVSIXs \
-                       $HOME/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
+rm -rf /home/opc/.vscode-server/data/logs/* 2>/dev/null || true
+VSCODE_AFTER=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
+                       /home/opc/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
 FREED_VSCODE=$((${VSCODE_BEFORE:-0} - ${VSCODE_AFTER:-0}))
 [ "$FREED_VSCODE" -lt 0 ] && FREED_VSCODE=0
 add_report "9️⃣ VSCode 캐시: $(numfmt --to=iec $FREED_VSCODE) 확보"
