@@ -52,6 +52,11 @@ send_discord_report() {
     return 0
   fi
 
+  if ! command -v jq >/dev/null 2>&1; then
+    log "[Discord] jq가 없어 전송을 건너뜀"
+    return 0
+  fi
+
   if (( ${#message} > 1900 )); then
     message="${message:0:1850}"$'\n... (truncated)'
   fi
@@ -84,8 +89,11 @@ gb() {
 size_to_gb() {
   local value="${1:-0B}"
   value="${value//[[:space:]]/}"
-  if [[ "$value" =~ ^([0-9.]+)([KMGT]?B?|B)$ ]]; then
-    awk -v n="${BASH_REMATCH[1]}" -v unit="${BASH_REMATCH[2]}" '
+  if [[ "$value" =~ ^([0-9.]+)([KkMGT]?i?B?|B)$ ]]; then
+    local unit="${BASH_REMATCH[2]}"
+    unit="${unit//i/}"
+    unit=$(printf '%s' "$unit" | tr '[:lower:]' '[:upper:]')
+    awk -v n="${BASH_REMATCH[1]}" -v unit="$unit" '
       BEGIN {
         if (unit == "K" || unit == "KB") n *= 1024
         else if (unit == "M" || unit == "MB") n *= 1024 * 1024
@@ -106,7 +114,9 @@ df_gb() {
 empty_dir_contents() {
   local dir="$1"
   [[ -d "$dir" ]] || return 0
-  find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+  while IFS= read -r -d '' entry; do
+    rm -rf "$entry" 2>/dev/null || true
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 }
 
 # --- 정리 전 현황 ---
