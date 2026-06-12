@@ -3,16 +3,25 @@
 # mac-disk-cleanup.sh — macOS 디스크 정리 스크립트
 # ============================================================
 # 용도: 주기적 디스크 정리 (cron 또는 launchd)
-# 대상: macOS (Apple Silicon / Intel)
+# 대상: macOS (Apple Silicon / Intel), Darwin/BSD 유틸 기준
 # 작성: 2026-06-12
+#
+# 설계 원칙:
+#   - sudo 미사용: cron/launchd는 사용자 권한으로 실행되므로 시스템 영역(/var/log 등)은
+#     건드리지 않고 사용자 홈/캐시만 정리한다. (/var/log는 newsyslog가 자동 회전)
+#   - BSD 유틸 기준: du -sk, stat -f, df -Pk, grep -oE 등 macOS 기본 명령만 사용.
+#   - 데이터 안전: 캐시/로그/임시파일만, 그것도 mtime/atime 경과 기준으로만 삭제.
 #
 # crontab 예시:
 #   0 3 * * 0  $HOME/cronjob/mac-disk-cleanup.sh >> $HOME/cronjob/logs/mac-disk-cleanup.log 2>&1
+#
+# launchd 예시: ~/Library/LaunchAgents/com.user.disk-cleanup.plist (StartCalendarInterval)
 # ============================================================
 
 set -euo pipefail
 
-export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.nvm/versions/node/v24.13.0/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+# Apple Silicon(/opt/homebrew) 및 Intel(/usr/local) Homebrew 경로 모두 포함
+export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.nvm/versions/node/v24.13.0/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 LOG_DIR="$HOME/cronjob/logs"
 mkdir -p "$LOG_DIR"
@@ -63,12 +72,9 @@ add_report() {
   REPORT="${REPORT}\n$*"
 }
 
+# BSD du에는 -b(바이트)가 없으므로 -sk(1024블록 KB)로 측정 후 바이트로 환산.
 du_bytes() {
-  { du -sb "$@" 2>/dev/null || true; } | awk '{sum += $1} END {print sum + 0}'
-}
-
-sudo_du_bytes() {
-  { sudo du -sb "$@" 2>/dev/null || true; } | awk '{sum += $1} END {print sum + 0}'
+  { du -sk "$@" 2>/dev/null || true; } | awk '{sum += $1} END {print (sum + 0) * 1024}'
 }
 
 gb() {
@@ -92,8 +98,9 @@ size_to_gb() {
   fi
 }
 
+# BSD df: -P(POSIX) -k(1024블록). 컬럼 = Filesystem 1024-blocks Used Avail Capacity Mounted
 df_gb() {
-  df -P / | awk 'NR == 2 { printf "used=%.2fGB avail=%.2fGB pcent=%s", ($3 - $4) / 1024 / 1024, $4 / 1024 / 1024, $5 }'
+  df -Pk / | awk 'NR == 2 { printf "used=%.2fGB avail=%.2fGB pcent=%s", $3 / 1024 / 1024, $4 / 1024 / 1024, $5 }'
 }
 
 empty_dir_contents() {
@@ -109,81 +116,61 @@ log "정리 전: $BEFORE"
 add_report "📊 **정리 전**: $BEFORE"
 
 # -------------------------------------------------------
-# 1. 시스템 로그 정리 (log command & ~/Library/Logs)
+# 1. ~/Library 캐시 정리 (브라우저/앱 캐시 포함, macOS 핵심)
 # -------------------------------------------------------
-log "[1/14] 시스템 로그 정리"
-FREED_LOG=0
-
-# macOS system.log 정리
-for LOGFILE in /var/log/system.log /var/log/kernel.log; do
-  if [ -f "$LOGFILE" ]; then
-    SIZE=$(stat -f%z "$LOGFILE" 2>/dev/null || echo 0)
-    if [ "$SIZE" -gt 52428800 ]; then  # 50MB
-      FREED_LOG=$((FREED_LOG + SIZE))
-      sudo truncate -s 0 "$LOGFILE"
-      log "  truncated $LOGFILE ($(gb "$SIZE"))"
-    fi
-  fi
-done
-
-# 오래된 로그 파일 정리 (7일 이상)
-for LOGDIR in /var/log /private/var/log; do
-  [ -d "$LOGDIR" ] && sudo find "$LOGDIR" -name "*.log.*" -mtime +7 -type f -delete 2>/dev/null || true
-done
-
-# ASL (Apple System Log) 정리
-if command -v log >/dev/null 2>&1; then
-  log_size_before=$(log show --predicate 'process == "kernel"' --last 7d 2>/dev/null | wc -l || echo 0)
-fi
-
-add_report "1️⃣ 시스템 로그: $(gb "$FREED_LOG") 확보"
-
-# -------------------------------------------------------
-# 2. ~/Library 캐시 정리 (macOS specific)
-# -------------------------------------------------------
-log "[2/14] ~/Library 캐시 정리"
-LIBRARY_CACHE_TARGETS=(
+# ~/Library/Caches 아래에 Chrome/Firefox/Safari/각종 앱 캐시가 모두 모여 있다.
+# 실행 중인 앱이 재다운로드할 수 있도록 7일 경과 파일만 삭제(전체 삭제 지양).
+log "[1/9] ~/Library 캐시 정리"
+LIBRARY_TARGETS=(
   "$HOME/Library/Caches"
   "$HOME/Library/Saved Application State"
-  "$HOME/Library/Preferences/com.*.plist"
 )
-LIBRARY_BEFORE=$(du_bytes "${LIBRARY_CACHE_TARGETS[@]}")
-
-# Xcode derived data 정리
-[ -d "$HOME/Library/Developer/Xcode/DerivedData" ] && rm -rf "$HOME/Library/Developer/Xcode/DerivedData"/*
-
-# Application Support 캐시 정리
-[ -d "$HOME/Library/Application Support" ] && find "$HOME/Library/Application Support" -xdev -type d -name "Caches" -exec rm -rf {} + 2>/dev/null || true
-
-LIBRARY_AFTER=$(du_bytes "${LIBRARY_CACHE_TARGETS[@]}")
+LIBRARY_BEFORE=$(du_bytes "${LIBRARY_TARGETS[@]}")
+if [[ -d "$HOME/Library/Caches" ]]; then
+  find "$HOME/Library/Caches" -xdev -type f -mtime +7 -delete 2>/dev/null || true
+  find "$HOME/Library/Caches" -xdev -type d -empty -mtime +7 -delete 2>/dev/null || true
+fi
+if [[ -d "$HOME/Library/Saved Application State" ]]; then
+  find "$HOME/Library/Saved Application State" -xdev -type f -mtime +14 -delete 2>/dev/null || true
+fi
+LIBRARY_AFTER=$(du_bytes "${LIBRARY_TARGETS[@]}")
 FREED_LIBRARY=$((${LIBRARY_BEFORE:-0} - ${LIBRARY_AFTER:-0}))
 [ "$FREED_LIBRARY" -lt 0 ] && FREED_LIBRARY=0
-add_report "2️⃣ ~/Library 캐시: $(gb "$FREED_LIBRARY") 확보"
+add_report "1️⃣ ~/Library 캐시: $(gb "$FREED_LIBRARY") 확보"
 
 # -------------------------------------------------------
-# 3. Homebrew 패키지 정리 (macOS package manager)
+# 2. Homebrew 정리 (macOS 패키지 매니저)
 # -------------------------------------------------------
-log "[3/14] Homebrew 정리"
+log "[2/9] Homebrew 정리"
+BREW_FREED=0
 if command -v brew >/dev/null 2>&1; then
-  brew autoremove 2>/dev/null || true
-  brew cleanup --prune=all 2>/dev/null || true
-  brew cleanup -s 2>/dev/null || true
+  BREW_CACHE_DIR=$(brew --cache 2>/dev/null || true)
+  BREW_BEFORE=$(du_bytes "$BREW_CACHE_DIR")
+  HOMEBREW_NO_AUTO_UPDATE=1 brew autoremove 2>/dev/null || true
+  HOMEBREW_NO_AUTO_UPDATE=1 brew cleanup -s --prune=all 2>/dev/null || true
+  BREW_AFTER=$(du_bytes "$BREW_CACHE_DIR")
+  BREW_FREED=$((${BREW_BEFORE:-0} - ${BREW_AFTER:-0}))
+  [ "$BREW_FREED" -lt 0 ] && BREW_FREED=0
+  add_report "2️⃣ Homebrew: $(gb "$BREW_FREED") 확보"
+else
+  add_report "2️⃣ Homebrew: 미설치"
 fi
-add_report "3️⃣ Homebrew 정리: 완료"
 
 # -------------------------------------------------------
-# 4. Node/npm/npx/nvm 캐시 정리
+# 3. Node/npm/npx/nvm 캐시 정리
 # -------------------------------------------------------
-log "[4/14] Node/npm/npx/nvm 캐시 정리"
-NPM_BEFORE=$(du_bytes \
-  "$HOME/.npm/_cacache" \
-  "$HOME/.npm/_npx" \
-  "$HOME/.npm/_logs" \
-  "$HOME/.npm/_update-notifier-last-checked" \
-  "$HOME/.nvm/.cache" \
-  "$HOME/.config/nvm/.cache" \
-  "$HOME/.cache/node-gyp" \
-  "$HOME/.node-gyp")
+log "[3/9] Node/npm/npx/nvm 캐시 정리"
+NPM_TARGETS=(
+  "$HOME/.npm/_cacache"
+  "$HOME/.npm/_npx"
+  "$HOME/.npm/_logs"
+  "$HOME/.npm/_update-notifier-last-checked"
+  "$HOME/.nvm/.cache"
+  "$HOME/.config/nvm/.cache"
+  "$HOME/.cache/node-gyp"
+  "$HOME/.node-gyp"
+)
+NPM_BEFORE=$(du_bytes "${NPM_TARGETS[@]}")
 
 NPM_BIN=""
 if command -v npm >/dev/null 2>&1; then
@@ -197,66 +184,70 @@ if [[ -n "$NPM_BIN" ]]; then
   "$NPM_BIN" cache verify --silent 2>/dev/null || true
 fi
 
-rm -rf "$HOME/.npm/_cacache" \
-       "$HOME/.npm/_npx" \
-       "$HOME/.npm/_logs" \
-       "$HOME/.npm/_update-notifier-last-checked" \
-       "$HOME/.nvm/.cache" \
-       "$HOME/.config/nvm/.cache" \
-       "$HOME/.cache/node-gyp" \
-       "$HOME/.node-gyp" 2>/dev/null || true
+rm -rf "${NPM_TARGETS[@]}" 2>/dev/null || true
 
-NPM_AFTER=$(du_bytes \
-  "$HOME/.npm/_cacache" \
-  "$HOME/.npm/_npx" \
-  "$HOME/.npm/_logs" \
-  "$HOME/.npm/_update-notifier-last-checked" \
-  "$HOME/.nvm/.cache" \
-  "$HOME/.config/nvm/.cache" \
-  "$HOME/.cache/node-gyp" \
-  "$HOME/.node-gyp")
+NPM_AFTER=$(du_bytes "${NPM_TARGETS[@]}")
 FREED_NPM=$((${NPM_BEFORE:-0} - ${NPM_AFTER:-0}))
 [ "$FREED_NPM" -lt 0 ] && FREED_NPM=0
-add_report "4️⃣ Node/npm/npx/nvm 캐시: $(gb "$FREED_NPM") 확보"
+add_report "3️⃣ Node/npm/npx/nvm 캐시: $(gb "$FREED_NPM") 확보"
 
 # -------------------------------------------------------
-# 5. Docker 미사용 이미지 정리 (if installed)
+# 4. Docker 미사용 이미지/빌드캐시 정리 (Docker Desktop, 설치 시에만)
 # -------------------------------------------------------
-log "[5/14] Docker 미사용 이미지 정리"
-if command -v docker >/dev/null 2>&1; then
+# dangling 이미지와 빌드 캐시만 제거. volume prune은 정지/삭제된 컨테이너의
+# named/anonymous 볼륨(DB 데이터 등)을 영구 삭제할 수 있어 개발 머신에서는 제외.
+log "[4/9] Docker 미사용 이미지/빌드캐시 정리"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   DANGLING_OUTPUT=$(docker image prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
   CACHE_OUTPUT=$(docker builder prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
-  VOLUME_OUTPUT=$(docker volume prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
-  DANGLING_FREED=$(echo "$DANGLING_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-  CACHE_FREED=$(echo "$CACHE_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-  VOLUME_FREED=$(echo "$VOLUME_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-  add_report "5️⃣ Docker 정리: dangling=$(size_to_gb "$DANGLING_FREED") volume=$(size_to_gb "$VOLUME_FREED") cache=$(size_to_gb "$CACHE_FREED") 확보"
+  DANGLING_FREED=$(echo "$DANGLING_OUTPUT" | grep -oE '[0-9.]+ *[KMGT]?B' | head -1 || echo "0B")
+  CACHE_FREED=$(echo "$CACHE_OUTPUT" | grep -oE '[0-9.]+ *[KMGT]?B' | head -1 || echo "0B")
+  add_report "4️⃣ Docker 정리: dangling=$(size_to_gb "$DANGLING_FREED") cache=$(size_to_gb "$CACHE_FREED") 확보"
 else
-  add_report "5️⃣ Docker 정리: Docker 미설치"
+  add_report "4️⃣ Docker 정리: 미설치 또는 미실행"
 fi
 
 # -------------------------------------------------------
-# 6. /tmp 및 /var/tmp 정리
+# 5. 임시 디렉토리 정리 (/private/tmp, /private/var/tmp)
 # -------------------------------------------------------
-log "[6/14] /tmp 및 /var/tmp 정리"
-TMP_BEFORE=$(du_bytes /tmp /var/tmp)
-find /tmp -type f -mtime +7 -not -path "/tmp/.*" -delete 2>/dev/null || true
-find /tmp -type d -empty -mtime +7 -not -path "/tmp" -delete 2>/dev/null || true
-find /var/tmp -type f -mtime +7 -not -path "/var/tmp/.*" -delete 2>/dev/null || true
-find /var/tmp -type d -empty -mtime +7 -delete 2>/dev/null || true
-TMP_AFTER=$(du_bytes /tmp /var/tmp)
+# macOS의 /tmp, /var/tmp는 /private/... 심볼릭 링크이므로 실제 경로를 직접 지정.
+# sudo 미사용이라 본인 소유 파일만 정리된다(타 사용자/시스템 파일은 권한 거부로 건너뜀).
+log "[5/9] 임시 디렉토리 정리"
+TMP_TARGETS=(/private/tmp /private/var/tmp)
+TMP_BEFORE=$(du_bytes "${TMP_TARGETS[@]}")
+for TMPDIR_PATH in "${TMP_TARGETS[@]}"; do
+  [ -d "$TMPDIR_PATH" ] || continue
+  find "$TMPDIR_PATH" -xdev -type f -mtime +7 -not -name '.*' -delete 2>/dev/null || true
+  find "$TMPDIR_PATH" -xdev -mindepth 1 -type d -empty -mtime +7 -delete 2>/dev/null || true
+done
+TMP_AFTER=$(du_bytes "${TMP_TARGETS[@]}")
 FREED_TMP=$((${TMP_BEFORE:-0} - ${TMP_AFTER:-0}))
 [ "$FREED_TMP" -lt 0 ] && FREED_TMP=0
-add_report "6️⃣ /tmp & /var/tmp: $(gb "$FREED_TMP") 확보"
+add_report "5️⃣ 임시 디렉토리: $(gb "$FREED_TMP") 확보"
+
+# -------------------------------------------------------
+# 6. 휴지통 비우기 (macOS)
+# -------------------------------------------------------
+log "[6/9] 휴지통 비우기"
+TRASH_BEFORE=$(du_bytes "$HOME/.Trash")
+empty_dir_contents "$HOME/.Trash"
+TRASH_AFTER=$(du_bytes "$HOME/.Trash")
+FREED_TRASH=$((${TRASH_BEFORE:-0} - ${TRASH_AFTER:-0}))
+[ "$FREED_TRASH" -lt 0 ] && FREED_TRASH=0
+add_report "6️⃣ 휴지통: $(gb "$FREED_TRASH") 확보"
 
 # -------------------------------------------------------
 # 7. VSCode 캐시 정리
 # -------------------------------------------------------
-log "[7/14] VSCode 캐시 정리"
+log "[7/9] VSCode 캐시 정리"
 VSCODE_PATHS=(
   "$HOME/.vscode-server/data/CachedExtensionVSIXs"
   "$HOME/.vscode-server/data/logs"
-  "$HOME/.vscode/extensions/.cache"
+  "$HOME/Library/Application Support/Code/Cache"
+  "$HOME/Library/Application Support/Code/CachedData"
+  "$HOME/Library/Application Support/Code/CachedExtensionVSIXs"
+  "$HOME/Library/Application Support/Code/GPUCache"
+  "$HOME/Library/Application Support/Code/logs"
 )
 VSCODE_BEFORE=$(du_bytes "${VSCODE_PATHS[@]}")
 for VSCODE_PATH in "${VSCODE_PATHS[@]}"; do
@@ -268,116 +259,53 @@ FREED_VSCODE=$((${VSCODE_BEFORE:-0} - ${VSCODE_AFTER:-0}))
 add_report "7️⃣ VSCode 캐시: $(gb "$FREED_VSCODE") 확보"
 
 # -------------------------------------------------------
-# 8. 휴지통 비우기 (macOS specific)
+# 8. Xcode / 개발 도구 캐시 정리
 # -------------------------------------------------------
-log "[8/14] 휴지통 비우기"
-TRASH_BEFORE=$(du_bytes "$HOME/.Trash")
-empty_dir_contents "$HOME/.Trash"
-TRASH_AFTER=$(du_bytes "$HOME/.Trash")
-FREED_TRASH=$((${TRASH_BEFORE:-0} - ${TRASH_AFTER:-0}))
-[ "$FREED_TRASH" -lt 0 ] && FREED_TRASH=0
-add_report "8️⃣ 휴지통: $(gb "$FREED_TRASH") 확보"
+# DerivedData는 재생성되는 빌드 산출물이라 전체 삭제 안전.
+# Archives는 배포용 아카이브라 자동 삭제하지 않는다.
+# gradle/m2는 캐시이나 재다운로드 비용이 크므로 30일 경과분만 정리.
+log "[8/9] Xcode/개발 도구 캐시 정리"
+DEV_TARGETS=(
+  "$HOME/Library/Developer/Xcode/DerivedData"
+  "$HOME/Library/Developer/CoreSimulator/Caches"
+  "$HOME/.gradle/caches"
+)
+DEV_BEFORE=$(du_bytes "${DEV_TARGETS[@]}")
+empty_dir_contents "$HOME/Library/Developer/Xcode/DerivedData"
+empty_dir_contents "$HOME/Library/Developer/CoreSimulator/Caches"
+find "$HOME/.gradle/caches" -xdev -type f -mtime +30 -delete 2>/dev/null || true
+DEV_AFTER=$(du_bytes "${DEV_TARGETS[@]}")
+FREED_DEV=$((${DEV_BEFORE:-0} - ${DEV_AFTER:-0}))
+[ "$FREED_DEV" -lt 0 ] && FREED_DEV=0
+add_report "8️⃣ Xcode/개발 캐시: $(gb "$FREED_DEV") 확보"
 
 # -------------------------------------------------------
-# 9. 홈 디렉토리 로그 정리
+# 9. 홈 디렉토리 로그/찌꺼기 및 .DS_Store 정리
 # -------------------------------------------------------
-log "[9/14] 홈 디렉토리 로그 정리"
-HOME_LOG_TARGETS=(
+log "[9/9] 홈 로그/찌꺼기 정리"
+HOME_TARGETS=(
   "$HOME/.npm/_logs"
+  "$HOME/.cache"
   "$HOME/.config/VirtualBox"
   "$HOME/.minecraft/logs"
 )
-HOME_LOG_BEFORE=$(du_bytes "${HOME_LOG_TARGETS[@]}")
+HOME_BEFORE=$(du_bytes "${HOME_TARGETS[@]}")
+# ~/.cache 30일 경과 파일
+find "$HOME/.cache" -xdev -type f -atime +30 -delete 2>/dev/null || true
+# 각종 앱 로그
 find "$HOME/.npm/_logs" -xdev -type f -name '*.log' -mtime +14 -delete 2>/dev/null || true
 find "$HOME/.config/VirtualBox" -xdev -maxdepth 1 -type f \( -name '*.log' -o -name '*.log.*' \) -mtime +30 -delete 2>/dev/null || true
 find "$HOME/.minecraft/logs" -xdev -type f \( -name '*.log' -o -name '*.log.gz' \) -mtime +30 -delete 2>/dev/null || true
-HOME_LOG_AFTER=$(du_bytes "${HOME_LOG_TARGETS[@]}")
-FREED_HOME_LOGS=$((${HOME_LOG_BEFORE:-0} - ${HOME_LOG_AFTER:-0}))
-[ "$FREED_HOME_LOGS" -lt 0 ] && FREED_HOME_LOGS=0
-add_report "9️⃣ 홈 로그 정리: $(gb "$FREED_HOME_LOGS") 확보"
-
-# -------------------------------------------------------
-# 10. Xcode 빌드 및 개발 도구 캐시
-# -------------------------------------------------------
-log "[10/14] Xcode 및 개발 도구 캐시 정리"
-XCODE_PATHS=(
-  "$HOME/Library/Developer/Xcode/DerivedData"
-  "$HOME/Library/Developer/Xcode/Archives"
-  "$HOME/.gradle/caches"
-  "$HOME/.m2/repository"
-)
-XCODE_BEFORE=$(du_bytes "${XCODE_PATHS[@]}")
-rm -rf "$HOME/Library/Developer/Xcode/DerivedData"/* 2>/dev/null || true
-find "$HOME/.gradle/caches" -type f -mtime +30 -delete 2>/dev/null || true
-XCODE_AFTER=$(du_bytes "${XCODE_PATHS[@]}")
-FREED_XCODE=$((${XCODE_BEFORE:-0} - ${XCODE_AFTER:-0}))
-[ "$FREED_XCODE" -lt 0 ] && FREED_XCODE=0
-add_report "🔟 Xcode/개발 캐시: $(gb "$FREED_XCODE") 확보"
-
-# -------------------------------------------------------
-# 11. 브라우저 캐시 정리
-# -------------------------------------------------------
-log "[11/14] 브라우저 캐시 정리"
-BROWSER_PATHS=(
-  "$HOME/Library/Caches/Google/Chrome"
-  "$HOME/Library/Caches/Firefox"
-  "$HOME/Library/Safari"
-)
-BROWSER_BEFORE=$(du_bytes "${BROWSER_PATHS[@]}")
-[ -d "$HOME/Library/Caches/Google/Chrome" ] && rm -rf "$HOME/Library/Caches/Google/Chrome/Cache" "$HOME/Library/Caches/Google/Chrome/Cache_Data" 2>/dev/null || true
-[ -d "$HOME/Library/Caches/Firefox" ] && find "$HOME/Library/Caches/Firefox" -name "*.sqlite" -delete 2>/dev/null || true
-BROWSER_AFTER=$(du_bytes "${BROWSER_PATHS[@]}")
-FREED_BROWSER=$((${BROWSER_BEFORE:-0} - ${BROWSER_AFTER:-0}))
-[ "$FREED_BROWSER" -lt 0 ] && FREED_BROWSER=0
-add_report "1️⃣1️⃣ 브라우저 캐시: $(gb "$FREED_BROWSER") 확보"
-
-# -------------------------------------------------------
-# 12. 오래된 임시/편집기 찌꺼기 정리
-# -------------------------------------------------------
-log "[12/14] 임시 파일 및 편집기 캐시 정리"
-CLUTTER_TARGETS=(
-  "$HOME/Library/Application Support"
-  "$HOME/.cache"
-)
-CLUTTER_BEFORE=$(du_bytes "${CLUTTER_TARGETS[@]}")
-find "$HOME" -maxdepth 1 -type f -mtime +30 \
+# 홈 최상위 편집기 찌꺼기 (30일 경과)
+find "$HOME" -xdev -maxdepth 1 -type f -mtime +30 \
   \( -name '*~' -o -name '*.tmp' -o -name '*.swp' -o -name '*.swo' -o -name '*.rej' \) \
   -delete 2>/dev/null || true
-# .DS_Store 정리 (macOS 시스템 파일)
-find "$HOME" -name '.DS_Store' -delete 2>/dev/null || true
-CLUTTER_AFTER=$(du_bytes "${CLUTTER_TARGETS[@]}")
-FREED_CLUTTER=$((${CLUTTER_BEFORE:-0} - ${CLUTTER_AFTER:-0}))
-[ "$FREED_CLUTTER" -lt 0 ] && FREED_CLUTTER=0
-add_report "1️⃣2️⃣ 임시/편집기 캐시: $(gb "$FREED_CLUTTER") 확보"
-
-# -------------------------------------------------------
-# 13. 언어 파일 및 불필요한 아키텍처 정리
-# -------------------------------------------------------
-log "[13/14] 언어/아키텍처 파일 정리"
-# macOS 시스템에 필요 없는 i386 아키텍처 정리 (Intel Mac의 경우 skip)
-ARCH_BEFORE=$(du_bytes "$HOME/.cache" "$HOME/Library/Caches")
-find /opt/homebrew/lib -name "*.i386" -delete 2>/dev/null || true
-find /usr/local/lib -name "*.i386" -delete 2>/dev/null || true
-ARCH_AFTER=$(du_bytes "$HOME/.cache" "$HOME/Library/Caches")
-FREED_ARCH=$((${ARCH_BEFORE:-0} - ${ARCH_AFTER:-0}))
-[ "$FREED_ARCH" -lt 0 ] && FREED_ARCH=0
-add_report "1️⃣3️⃣ 언어/아키텍처 정리: $(gb "$FREED_ARCH") 확보"
-
-# -------------------------------------------------------
-# 14. 마지막 스캔: 일반 캐시 정리
-# -------------------------------------------------------
-log "[14/14] 최종 캐시 정리"
-FINAL_TARGETS=(
-  "$HOME/.cache"
-  "$HOME/Library/Caches"
-)
-FINAL_BEFORE=$(du_bytes "${FINAL_TARGETS[@]}")
-find "$HOME/.cache" -type f -atime +30 -delete 2>/dev/null || true
-find "$HOME/Library/Caches" -type f -atime +30 -delete 2>/dev/null || true
-FINAL_AFTER=$(du_bytes "${FINAL_TARGETS[@]}")
-FREED_FINAL=$((${FINAL_BEFORE:-0} - ${FINAL_AFTER:-0}))
-[ "$FREED_FINAL" -lt 0 ] && FREED_FINAL=0
-add_report "1️⃣4️⃣ 최종 캐시 정리: $(gb "$FREED_FINAL") 확보"
+# .DS_Store 정리 (홈 트리, 동일 볼륨 한정)
+find "$HOME" -xdev -name '.DS_Store' -type f -delete 2>/dev/null || true
+HOME_AFTER=$(du_bytes "${HOME_TARGETS[@]}")
+FREED_HOME=$((${HOME_BEFORE:-0} - ${HOME_AFTER:-0}))
+[ "$FREED_HOME" -lt 0 ] && FREED_HOME=0
+add_report "9️⃣ 홈 로그/찌꺼기: $(gb "$FREED_HOME") 확보"
 
 # --- 정리 후 현황 ---
 AFTER=$(df_gb)
