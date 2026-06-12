@@ -155,10 +155,22 @@ add_report "1️⃣ 시스템 로그: $(gb "$FREED_LOG") 확보"
 # -------------------------------------------------------
 log "[2/17] journald 정리"
 JOURNAL_BEFORE=$(sudo journalctl --disk-usage 2>/dev/null | grep -oP '[\d.]+[KMGT]' || echo "0")
+JOURNAL_DIR_BEFORE=$(sudo_du_bytes /var/log/journal)
 sudo journalctl --vacuum-time=7d --quiet 2>/dev/null || true
 sudo journalctl --vacuum-size=512M --quiet 2>/dev/null || true
+CURRENT_MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || true)
+if [[ -n "$CURRENT_MACHINE_ID" && -d /var/log/journal ]]; then
+  while IFS= read -r -d '' JOURNAL_DIR; do
+    if [[ "$(basename "$JOURNAL_DIR")" != "$CURRENT_MACHINE_ID" ]]; then
+      sudo rm -rf -- "$JOURNAL_DIR" 2>/dev/null || true
+    fi
+  done < <(sudo find /var/log/journal -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+fi
 JOURNAL_AFTER=$(sudo journalctl --disk-usage 2>/dev/null | grep -oP '[\d.]+[KMGT]' || echo "0")
-add_report "2️⃣ journald: $(size_to_gb "$JOURNAL_BEFORE") → $(size_to_gb "$JOURNAL_AFTER")"
+JOURNAL_DIR_AFTER=$(sudo_du_bytes /var/log/journal)
+FREED_JOURNAL_DIR=$((${JOURNAL_DIR_BEFORE:-0} - ${JOURNAL_DIR_AFTER:-0}))
+[ "$FREED_JOURNAL_DIR" -lt 0 ] && FREED_JOURNAL_DIR=0
+add_report "2️⃣ journald: $(size_to_gb "$JOURNAL_BEFORE") → $(size_to_gb "$JOURNAL_AFTER") stale=$(gb "$FREED_JOURNAL_DIR") 확보"
 
 # -------------------------------------------------------
 # 3. apt autoremove (불필요 패키지 제거) — clean 전에 먼저 실행
