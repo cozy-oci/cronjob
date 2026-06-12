@@ -164,19 +164,26 @@ add_report "5️⃣ 유저 캐시: $(numfmt --to=iec $FREED_USER) 확보"
 # 6. Docker 미사용 이미지 정리
 # -------------------------------------------------------
 log "[6/9] Docker 미사용 이미지 정리"
-DOCKER_BEFORE=$(docker system df --format '{{.Size}}' 2>/dev/null | head -1 || echo "0")
-DOCKER_OUTPUT=$(docker system prune -a -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
-DOCKER_FREED=$(echo "$DOCKER_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
-add_report "6️⃣ Docker 정리: ${DOCKER_FREED} 확보"
+DOCKER_BEFORE_BYTES=$(docker system df --format '{{json .}}' 2>/dev/null | awk -F'"' '/"TotalCount"/{for(i=1;i<=NF;i++) if($i=="Size") print $(i+2)}' || echo 0)
+# prune -a 는 정지된 컨테이너(minikube 등)까지 삭제하므로 사용 금지.
+# dangling 이미지(태그 없는 레이어)와 빌드 캐시만 제거한다.
+DANGLING_OUTPUT=$(docker image prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
+CACHE_OUTPUT=$(docker builder prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
+# 컨테이너(실행 중 + 정지 중 모두)에 연결되지 않은 볼륨만 삭제
+VOLUME_OUTPUT=$(docker volume prune -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
+DANGLING_FREED=$(echo "$DANGLING_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
+CACHE_FREED=$(echo "$CACHE_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
+VOLUME_FREED=$(echo "$VOLUME_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
+add_report "6️⃣ Docker 정리: dangling=${DANGLING_FREED} volume=${VOLUME_FREED} cache=${CACHE_FREED} 확보"
 
 # -------------------------------------------------------
 # 7. 패키지 캐시 정리 (dnf + PackageKit) — autoremove 후 마지막에 정리
 # -------------------------------------------------------
 log "[7/9] 패키지 캐시 정리"
-CACHE_BEFORE=$(sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null | awk '{s+=$1}END{print s+0}')
+CACHE_BEFORE=$({ sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null || true; } | awk '{s+=$1}END{print s+0}')
 sudo dnf clean all --quiet 2>/dev/null || true
 sudo rm -rf /var/cache/PackageKit/* 2>/dev/null || true
-CACHE_AFTER=$(sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null | awk '{s+=$1}END{print s+0}')
+CACHE_AFTER=$({ sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null || true; } | awk '{s+=$1}END{print s+0}')
 FREED_CACHE=$((CACHE_BEFORE - CACHE_AFTER))
 [ "$FREED_CACHE" -lt 0 ] && FREED_CACHE=0
 add_report "7️⃣ 패키지 캐시: $(numfmt --to=iec $FREED_CACHE) 확보"
