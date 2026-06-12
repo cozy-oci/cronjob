@@ -7,14 +7,14 @@
 # 작성: 2026-02-11
 #
 # OS crontab 예시:
-#   0 3 * * 0  /home/opc/cronjob/disk-cleanup.sh >> /home/opc/cronjob/logs/disk-cleanup.log 2>&1
+#   0 3 * * 0  $HOME/cronjob/disk-cleanup.sh >> $HOME/cronjob/logs/disk-cleanup.log 2>&1
 # ============================================================
 
 set -euo pipefail
 
-export PATH="/home/opc/bin:/home/opc/.local/bin:/home/opc/.nvm/versions/node/v24.13.0/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="$HOME/bin:$HOME/.local/bin:$HOME/.nvm/versions/node/v24.13.0/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-LOG_DIR="/home/opc/cronjob/logs"
+LOG_DIR="$HOME/cronjob/logs"
 mkdir -p "$LOG_DIR"
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
@@ -25,9 +25,9 @@ load_discord_env() {
     # cron does not load interactive shell config by default.
     # Import only Discord exports because .zshrc may contain zsh-only syntax.
     # shellcheck source=/dev/null
-    [[ -r /home/opc/.park_reserve.env ]] && source <(grep -E '^export DISCORD_TOKEN=' /home/opc/.park_reserve.env) || true
+    [[ -r $HOME/.park_reserve.env ]] && source <(grep -E '^export DISCORD_TOKEN=' $HOME/.park_reserve.env) || true
     # shellcheck source=/dev/null
-    [[ -r /home/opc/.zshrc ]] && source <(grep -E '^export (DISCORD_TOKEN|CHANNEL_UPDATE)=' /home/opc/.zshrc) || true
+    [[ -r $HOME/.zshrc ]] && source <(grep -E '^export (DISCORD_TOKEN|CHANNEL_UPDATE)=' $HOME/.zshrc) || true
   fi
 }
 
@@ -135,10 +135,10 @@ add_report "3️⃣ dnf autoremove: ${AUTOREMOVE_OUTPUT}"
 # 4. npm 캐시 정리
 # -------------------------------------------------------
 log "[4/9] npm 캐시 정리"
-NPM_BEFORE=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_BEFORE=0
-/home/opc/.nvm/versions/node/v24.13.0/bin/npm cache clean --force --silent 2>/dev/null || true
-rm -rf /home/opc/.npm/_npx 2>/dev/null || true
-NPM_AFTER=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_AFTER=0
+NPM_BEFORE=$(du -sb $HOME/.npm/_cacache $HOME/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_BEFORE=0
+$HOME/.nvm/versions/node/v24.13.0/bin/npm cache clean --force --silent 2>/dev/null || true
+rm -rf $HOME/.npm/_npx 2>/dev/null || true
+NPM_AFTER=$(du -sb $HOME/.npm/_cacache $HOME/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_AFTER=0
 FREED_NPM=$((${NPM_BEFORE:-0} - ${NPM_AFTER:-0}))
 [ "$FREED_NPM" -lt 0 ] && FREED_NPM=0
 add_report "4️⃣ npm 캐시(_cacache+_npx): $(numfmt --to=iec $FREED_NPM) 확보"
@@ -147,15 +147,15 @@ add_report "4️⃣ npm 캐시(_cacache+_npx): $(numfmt --to=iec $FREED_NPM) 확
 # 5. 유저 캐시 정리 (Homebrew, mozilla, pip)
 # -------------------------------------------------------
 log "[5/9] 유저 캐시 정리"
-USER_BEFORE=$(du_bytes /home/opc/.cache)
-rm -rf /home/opc/.cache/Homebrew/* 2>/dev/null || true
-rm -rf /home/opc/.cache/mozilla/* 2>/dev/null || true
-rm -rf /home/opc/.cache/pip/* 2>/dev/null || true
-rm -rf /home/opc/.cache/node-gyp/* 2>/dev/null || true
-rm -rf /home/opc/.cache/bbrew/* 2>/dev/null || true
-rm -rf /home/opc/.cache/helm/* 2>/dev/null || true
-rm -rf /home/opc/.cache/gnome-software/* 2>/dev/null || true
-USER_AFTER=$(du_bytes /home/opc/.cache)
+USER_BEFORE=$(du_bytes $HOME/.cache)
+rm -rf $HOME/.cache/Homebrew/* 2>/dev/null || true
+rm -rf $HOME/.cache/mozilla/* 2>/dev/null || true
+rm -rf $HOME/.cache/pip/* 2>/dev/null || true
+rm -rf $HOME/.cache/node-gyp/* 2>/dev/null || true
+rm -rf $HOME/.cache/bbrew/* 2>/dev/null || true
+rm -rf $HOME/.cache/helm/* 2>/dev/null || true
+rm -rf $HOME/.cache/gnome-software/* 2>/dev/null || true
+USER_AFTER=$(du_bytes $HOME/.cache)
 FREED_USER=$((${USER_BEFORE:-0} - ${USER_AFTER:-0}))
 [ "$FREED_USER" -lt 0 ] && FREED_USER=0
 add_report "5️⃣ 유저 캐시: $(numfmt --to=iec $FREED_USER) 확보"
@@ -197,14 +197,14 @@ add_report "8️⃣ /tmp: $(numfmt --to=iec $FREED_TMP) 확보"
 # 9. VSCode Server 캐시 정리
 # -------------------------------------------------------
 log "[9/9] VSCode Server 캐시 정리"
-VSCODE_BEFORE=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
-                        /home/opc/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_BEFORE=0
+VSCODE_BEFORE=$(du -sb $HOME/.vscode-server/data/CachedExtensionVSIXs \
+                        $HOME/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_BEFORE=0
 # 확장 설치 캐시 — VSCode가 필요 시 재다운로드하므로 안전하게 삭제
-rm -rf /home/opc/.vscode-server/data/CachedExtensionVSIXs/* 2>/dev/null || true
+rm -rf $HOME/.vscode-server/data/CachedExtensionVSIXs/* 2>/dev/null || true
 # 서버 로그 삭제
-rm -rf /home/opc/.vscode-server/data/logs/* 2>/dev/null || true
-VSCODE_AFTER=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
-                       /home/opc/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
+rm -rf $HOME/.vscode-server/data/logs/* 2>/dev/null || true
+VSCODE_AFTER=$(du -sb $HOME/.vscode-server/data/CachedExtensionVSIXs \
+                       $HOME/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
 FREED_VSCODE=$((${VSCODE_BEFORE:-0} - ${VSCODE_AFTER:-0}))
 [ "$FREED_VSCODE" -lt 0 ] && FREED_VSCODE=0
 add_report "9️⃣ VSCode 캐시: $(numfmt --to=iec $FREED_VSCODE) 확보"
