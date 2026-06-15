@@ -3,19 +3,23 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import requests
 import yaml
 
 
-REPO_SSH_URL = os.environ["GIT_REPO_SSH_URL"]   # e.g. git@github.com:bahn1075/mykubernetes.git
+REPO_SSH_URL = os.environ["GIT_REPO_SSH_URL"]
 GIT_USER = os.environ.get("GIT_USER", "helm-update-bot")
 GIT_EMAIL = os.environ.get("GIT_EMAIL", "helm-update@bot.local")
-HELM_PATH = os.environ.get("HELM_SUBPATH", "helm")  # subdirectory inside repo to search
+HELM_PATH = os.environ.get("HELM_SUBPATH", "helm")
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+DISCORD_CHANNEL = os.environ.get("DISCORD_CHANNEL", "")
 
 
 def setup_ssh() -> None:
@@ -40,7 +44,6 @@ def latest_chart_version(repo_url: str, chart: str) -> str:
     entries = index.get("entries", {}).get(chart, [])
     if not entries:
         raise ValueError(f"chart '{chart}' not found in {index_url}")
-    # index.yaml entries are sorted newest-first
     return entries[0]["version"]
 
 
@@ -53,8 +56,40 @@ def update_file(path: Path, old_rev: str, new_rev: str) -> bool:
     return True
 
 
+def send_discord(message: str) -> None:
+    if not DISCORD_TOKEN or not DISCORD_CHANNEL:
+        print("[Discord] 토큰 또는 채널 ID 없음 — 전송 건너뜀")
+        return
+    if len(message) > 1900:
+        message = message[:1850] + "\n... (truncated)"
+    url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL}/messages"
+    payload = json.dumps({"content": message}, ensure_ascii=False)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        f.write(payload)
+        payload_path = f.name
+    result = subprocess.run(
+        ["curl", "-fsS", "-X", "POST", url,
+         "-H", f"Authorization: Bot {DISCORD_TOKEN}",
+         "-H", "Content-Type: application/json",
+         "-d", f"@{payload_path}"],
+        capture_output=True, text=True,
+    )
+    os.unlink(payload_path)
+    if result.returncode == 0:
+        print("[Discord] 리포트 전송 완료")
+    else:
+        print(f"[Discord] 전송 실패: {(result.stderr or result.stdout).strip()}")
+
+
 def main() -> None:
     setup_ssh()
+    started_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    report_lines: list[str] = []
+    updated_count = 0
+    ok_count = 0
+    fail_count = 0
+    pushed = False
 
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["git", "clone", REPO_SSH_URL, tmp], check=True)
@@ -68,6 +103,8 @@ def main() -> None:
             if not doc or doc.get("kind") != "Application":
                 continue
 
+            app_name = app_file.parent.name
+
             sources = doc.get("spec", {}).get("sources", [])
             for source in sources:
                 chart = source.get("chart")
@@ -79,26 +116,46 @@ def main() -> None:
                     latest = latest_chart_version(repo_url, chart)
                 except Exception as exc:
                     print(f"WARN {chart}: {exc}")
+                    report_lines.append(f"❌ **{app_name}**: 최신 버전 조회 실패 (현재: `{current_rev}`)")
+                    fail_count += 1
                     continue
 
                 if latest == current_rev:
                     print(f"OK   {chart} {current_rev}")
+                    report_lines.append(f"✅ **{app_name}**: `{current_rev}` (최신)")
+                    ok_count += 1
                     continue
 
                 print(f"UP   {chart}: {current_rev} -> {latest}")
                 if update_file(app_file, current_rev, latest):
-                    rel = str(app_file.relative_to(tmp))
-                    changed.append(f"{rel}: {chart} {current_rev} -> {latest}")
+                    report_lines.append(f"⬆️ **{app_name}**: `{current_rev}` → `{latest}`")
+                    changed.append(f"{app_name}: {current_rev} → {latest}")
+                    updated_count += 1
                     subprocess.run(["git", "add", str(app_file)], cwd=tmp, check=True)
 
-        if not changed:
+        if changed:
+            commit_msg = "chore: update helm chart revisions\n\n" + "\n".join(f"- {c}" for c in changed)
+            subprocess.run(["git", "commit", "-m", commit_msg], cwd=tmp, check=True)
+            result = subprocess.run(["git", "push"], cwd=tmp, capture_output=True, text=True)
+            if result.returncode == 0:
+                pushed = True
+                print(f"Pushed {len(changed)} update(s).")
+            else:
+                fail_count += 1
+                report_lines.append(f"❌ Git push 실패: {result.stderr.strip()}")
+        else:
             print("All charts up to date.")
-            return
 
-        commit_msg = "chore: update helm chart revisions\n\n" + "\n".join(f"- {c}" for c in changed)
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=tmp, check=True)
-        subprocess.run(["git", "push"], cwd=tmp, check=True)
-        print(f"Pushed {len(changed)} update(s).")
+    # Discord 보고서 전송
+    body = "\n".join(report_lines)
+    push_line = "\n🚀 Git push 완료 — ArgoCD 자동 배포 진행 중" if pushed else ""
+    message = (
+        f"🔄 **주간 Helm Chart 업데이트** ({started_at})\n\n"
+        f"{body}\n\n"
+        f"📊 업데이트: {updated_count} | 최신: {ok_count} | 실패: {fail_count}"
+        f"{push_line}"
+    )
+    send_discord(message)
 
 
 if __name__ == "__main__":
