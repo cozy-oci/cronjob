@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: helm-update
+spec:
+  schedule: "0 10 * * 5"
+  timeZone: "Asia/Seoul"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: helm-update
+              image: docker.io/bahn1075/helm-update:latest
+              imagePullPolicy: Always
+              envFrom:
+                - secretRef:
+                    name: helm-update-secret
