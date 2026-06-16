@@ -91,8 +91,8 @@ format_dnf_output() {
             next
         }
         section && /^[[:space:]]*$/ { section=""; next }
-        section && NF >= 3 && $1 !~ /^(Package|Installing|Upgrading|Removing|Architecture)$/ {
-            printf "- %s %s: %s\n", section, $1, $3
+        section && NF >= 1 {
+            printf "- %s %s\n", section, $1
         }
     ' "$file" | head -40
 }
