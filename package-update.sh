@@ -74,13 +74,15 @@ format_dnf_output() {
 
     if grep -q '^Error:' "$file"; then
         awk '
-            /^Error:/ { capture=1; print "- " $0; next }
+            /^Error:/ { capture=1; print "- " $0; count++; if (count >= 20) exit; next }
             capture && (/^ Problem / || /^  - / || /^\(/) {
                 line=$0
                 sub(/^[[:space:]]+/, "", line)
                 print "- " line
+                count++
+                if (count >= 20) exit
             }
-        ' "$file" | head -20
+        ' "$file"
         return 0
     fi
 
@@ -93,8 +95,10 @@ format_dnf_output() {
         section && /^[[:space:]]*$/ { section=""; next }
         section && NF >= 1 {
             printf "- %s %s\n", section, $1
+            count++
+            if (count >= 40) exit
         }
-    ' "$file" | head -40
+    ' "$file"
 }
 
 format_brew_updates() {
