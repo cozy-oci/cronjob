@@ -18,7 +18,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: park-reserve
-              image: docker.io/bahn1075/park-reserve:latest
+              image: docker.io/bahn1075/park-reserve:2606301720
               imagePullPolicy: IfNotPresent
               securityContext:
                 runAsUser: 0

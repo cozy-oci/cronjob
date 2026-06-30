@@ -44,6 +44,7 @@ DEFAULT_TIMEZONE = "Asia/Seoul"
 REMOTE_SCRIPT = r"""
 import json
 import os
+import re
 import sys
 import time
 import base64
@@ -109,6 +110,39 @@ def click_visible_text(page, text, timeout_ms=10000):
                 except Exception:
                     pass
         page.wait_for_timeout(500)
+    return False
+
+
+def parse_ymd(value):
+    match = re.search(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", value or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def month_delta(from_ymd, to_ymd):
+    return (to_ymd[0] - from_ymd[0]) * 12 + (to_ymd[1] - from_ymd[1])
+
+
+def click_datepicker_nav(page, direction, timeout_ms=5000):
+    selectors = [
+        f"th.{direction}",
+        f".datepicker-days th.{direction}",
+        f".datepicker .{direction}",
+        f"[class*='datepicker'] th.{direction}",
+    ]
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        for frame in page.frames:
+            for selector in selectors:
+                try:
+                    locator = frame.locator(selector).first
+                    if locator.count() and locator.is_visible():
+                        locator.click(force=True, timeout=1000)
+                        return True
+                except Exception:
+                    pass
+        page.wait_for_timeout(200)
     return False
 
 
@@ -193,11 +227,30 @@ def main():
         form_frame.locator("#EMP_CAR_NO").fill(cfg["car_no"], timeout=30000)
 
         # The date input is controlled by a calendar widget that overrides fill().
-        # We must click the target day cell in the picker UI directly.
-        target_day = str(int(cfg["target_date"].split(".")[-1]))  # "2026.06.22" → "22"
-        log(f"opening date picker (target day: {target_day})")
+        # Move the visible picker month first, then click the target day cell.
+        target_ymd = parse_ymd(cfg["target_date"])
+        if not target_ymd:
+            raise RuntimeError(f"Invalid target date: {cfg['target_date']}")
+        target_day = str(target_ymd[2])  # "2026.06.22" -> "22"
+        log(f"opening date picker (target date: {cfg['target_date']})")
         form_frame.locator("#REQ_DATE").click(force=True, timeout=10000)
         page.wait_for_timeout(600)
+
+        current_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
+        current_ymd = parse_ymd(current_req_date)
+        if current_ymd:
+            diff = month_delta(current_ymd, target_ymd)
+            direction = "next" if diff > 0 else "prev"
+            for _ in range(abs(diff)):
+                if not click_datepicker_nav(page, direction):
+                    raise RuntimeError(
+                        f"Could not move date picker {direction} from {current_req_date} to {cfg['target_date']}"
+                    )
+                page.wait_for_timeout(300)
+            if diff:
+                log(f"date picker moved {diff:+d} month(s)")
+        else:
+            log(f"WARNING: could not parse current request date: {current_req_date!r}")
 
         date_selected = False
         deadline = time.time() + 10
@@ -240,6 +293,16 @@ def main():
             )
 
         page.wait_for_timeout(300)
+        selected_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
+        if selected_req_date != cfg["target_date"]:
+            result["date_mismatch"] = {
+                "expected": cfg["target_date"],
+                "actual": selected_req_date,
+            }
+            capture_screenshot(page, result, "park_reserve_date_mismatch")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
         form_frame.locator("#selFuelTypeCd").select_option(value=cfg["fuel_value"], timeout=30000)
         form_frame.locator("#REASON").fill(cfg["reason"], timeout=30000)
 
