@@ -182,192 +182,225 @@ def main():
 
         page.on("dialog", on_dialog)
 
-        log("opening target page")
-        page.goto(cfg["target_url"], wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1000)
-
-        if "lil.lgcns.com/Account/Login" in page.url:
-            result["steps"].append("login_page")
-            log("logging in")
-            page.locator('input[name="ID"]').fill(cfg["employee_id"], timeout=30000)
-            page.locator('input[name="Password"]').fill(password, timeout=30000)
-            submit = page.locator('button[type="submit"], input[type="submit"]').first
-            submit.click(timeout=30000)
-
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            if "uservice.lgcns.com/LGCNS.SV.MAIN/Frame/MainFrame.aspx" in page.url:
-                break
+        try:
+            log("opening target page")
+            page.goto(cfg["target_url"], wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(1000)
 
-        result["after_login_url"] = page.url
-        result["after_login_title"] = page.title()
-        result["returned_to_target"] = (
-            "uservice.lgcns.com/LGCNS.SV.MAIN/Frame/MainFrame.aspx" in page.url
-            and "menuId=SVREQ1801" in page.url
-        )
-        if not result["returned_to_target"]:
-            raise RuntimeError(f"Login did not return to target page: {page.url}")
+            if "lil.lgcns.com/Account/Login" in page.url:
+                result["steps"].append("login_page")
+                log("logging in")
+                page.locator('input[name="ID"]').fill(cfg["employee_id"], timeout=30000)
+                page.locator('input[name="Password"]').fill(password, timeout=30000)
+                submit = page.locator('button[type="submit"], input[type="submit"]').first
+                submit.click(timeout=30000)
 
-        list_frame = find_frame(page, "#RequestParking", timeout_ms=90000)
-        result["list_frame_url"] = list_frame.url
-        result["list_text"] = safe_body_text(list_frame)
-        if "임직원 단기주차 신청 내역" not in result["list_text"]:
-            raise RuntimeError("Target list page text was not found")
-
-        log("opening request form")
-        list_frame.locator("#RequestParking").click(force=True, timeout=30000)
-        form_frame = find_frame(page, "#EMP_CAR_NO", timeout_ms=60000)
-        result["form_frame_url"] = form_frame.url
-        result["form_text_before"] = safe_body_text(form_frame)
-        if "임직원 단기주차 신청" not in result["form_text_before"]:
-            raise RuntimeError("Parking request form text was not found")
-
-        log("filling request form")
-        form_frame.locator("#EMP_CAR_NO").fill(cfg["car_no"], timeout=30000)
-
-        # The date input is controlled by a calendar widget that overrides fill().
-        # Move the visible picker month first, then click the target day cell.
-        target_ymd = parse_ymd(cfg["target_date"])
-        if not target_ymd:
-            raise RuntimeError(f"Invalid target date: {cfg['target_date']}")
-        target_day = str(target_ymd[2])  # "2026.06.22" -> "22"
-        log(f"opening date picker (target date: {cfg['target_date']})")
-        form_frame.locator("#REQ_DATE").click(force=True, timeout=10000)
-        page.wait_for_timeout(600)
-
-        current_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
-        current_ymd = parse_ymd(current_req_date)
-        if current_ymd:
-            diff = month_delta(current_ymd, target_ymd)
-            direction = "next" if diff > 0 else "prev"
-            for _ in range(abs(diff)):
-                if not click_datepicker_nav(page, direction):
-                    raise RuntimeError(
-                        f"Could not move date picker {direction} from {current_req_date} to {cfg['target_date']}"
-                    )
-                page.wait_for_timeout(300)
-            if diff:
-                log(f"date picker moved {diff:+d} month(s)")
-        else:
-            log(f"WARNING: could not parse current request date: {current_req_date!r}")
-
-        date_selected = False
-        deadline = time.time() + 10
-        while not date_selected and time.time() < deadline:
-            for frame in page.frames:
-                try:
-                    for sel in [
-                        "td.day:not(.disabled):not(.old):not(.new)",
-                        "td.day:not(.disabled)",
-                        "td:not(.disabled):not(.old):not(.new)",
-                    ]:
-                        cells = frame.locator(sel)
-                        count = cells.count()
-                        for i in range(count):
-                            try:
-                                cell = cells.nth(i)
-                                if cell.inner_text(timeout=300).strip() == target_day:
-                                    cell.click(timeout=3000)
-                                    date_selected = True
-                                    log(f"date cell clicked (selector: {sel})")
-                                    break
-                            except Exception:
-                                pass
-                        if date_selected:
-                            break
-                except Exception:
-                    pass
-            if not date_selected:
-                page.wait_for_timeout(300)
-
-        if not date_selected:
-            log("WARNING: calendar cell not found, falling back to fill")
-            form_frame.locator("#REQ_DATE").fill(cfg["target_date"], timeout=10000)
-            form_frame.locator("#REQ_DATE").evaluate(
-                '''el => {
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                }'''
-            )
-
-        page.wait_for_timeout(300)
-        selected_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
-        if selected_req_date != cfg["target_date"]:
-            result["date_mismatch"] = {
-                "expected": cfg["target_date"],
-                "actual": selected_req_date,
-            }
-            capture_screenshot(page, result, "park_reserve_date_mismatch")
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return
-
-        form_frame.locator("#selFuelTypeCd").select_option(value=cfg["fuel_value"], timeout=30000)
-        form_frame.locator("#REASON").fill(cfg["reason"], timeout=30000)
-
-        result["filled_values"] = form_frame.evaluate(
-            '''() => ({
-                car_no: document.querySelector('#EMP_CAR_NO')?.value,
-                req_date: document.querySelector('#REQ_DATE')?.value,
-                fuel_value: document.querySelector('#selFuelTypeCd')?.value,
-                fuel_text: document.querySelector('#selFuelTypeCd option:checked')?.textContent?.trim(),
-                reason: document.querySelector('#REASON')?.value
-            })'''
-        )
-        result["date_selected_via_calendar"] = date_selected
-
-        if cfg["dry_run"]:
-            result["steps"].append("dry_run_skip_submit")
-            log("dry-run: skipping self approval")
-            capture_screenshot(page, result, "park_reserve_dry_run")
-        else:
-            log("clicking self approval")
-            result["submitted"] = True
-            try:
-                form_frame.locator("#Req").click(force=True, timeout=30000)
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                if "uservice.lgcns.com/LGCNS.SV.MAIN/Frame/MainFrame.aspx" in page.url:
+                    break
                 page.wait_for_timeout(1000)
-                capture_screenshot(page, result, "park_reserve_result")
-                result["confirm_clicked"] = click_visible_text(page, "확인", timeout_ms=10000)
-                page.wait_for_timeout(8000)
-            except PlaywrightTimeoutError as exc:
-                result["submit_timeout"] = str(exc)
-            result["after_submit_url"] = page.url
-            result["after_submit_frame_url"] = form_frame.url
-            result["form_text_after"] = safe_body_text(form_frame)
-            # Extract the site's actual result message (the text appended after the
-            # last "목록" nav button — the only place the server response appears).
-            _form_after = result["form_text_after"]
-            if "목록" in _form_after:
-                _tail = _form_after.rsplit("목록", 1)[-1]
-                _tail = _tail.replace("확인", "").replace("취소", "").strip()
-            else:
-                _tail = ""
-            result["site_message"] = _tail
 
-            # Match only against the server-injected tail, NOT the static page instructions.
-            # "불가합니다" / "신청 가능한 날짜" both appear in the static help text and
-            # must not be used as failure signals.
-            failure_signals = (
-                "신청에 실패했습니다",
-                "최대 주차 가능 대수를 초과",
-                "오류가 발생",
+            result["after_login_url"] = page.url
+            result["after_login_title"] = page.title()
+            result["returned_to_target"] = (
+                "uservice.lgcns.com/LGCNS.SV.MAIN/Frame/MainFrame.aspx" in page.url
+                and "menuId=SVREQ1801" in page.url
             )
-            success_signals = (
-                "승인완료",
-                "신청되었습니다",
-                "저장되었습니다",
-                "정상적으로 처리",
-                "자가승인 되었습니다",
+            if not result["returned_to_target"]:
+                raise RuntimeError(f"Login did not return to target page: {page.url}")
+
+            list_frame = find_frame(page, "#RequestParking", timeout_ms=90000)
+            result["list_frame_url"] = list_frame.url
+            result["list_text"] = safe_body_text(list_frame)
+            if "임직원 단기주차 신청 내역" not in result["list_text"]:
+                raise RuntimeError("Target list page text was not found")
+
+            log("opening request form")
+            # The midnight rush (new +14d slots open at 00:00) can make the form page
+            # take well over a minute, so click-and-wait is retried instead of one-shot.
+            form_frame = None
+            for attempt in range(1, 4):
+                try:
+                    button = None
+                    for frame in page.frames:
+                        try:
+                            locator = frame.locator("#RequestParking").first
+                            if locator.count() and locator.is_visible():
+                                button = locator
+                                break
+                        except Exception:
+                            pass
+                    if button is not None:
+                        button.click(force=True, timeout=15000)
+                    form_frame = find_frame(page, "#EMP_CAR_NO", timeout_ms=45000)
+                    break
+                except Exception as exc:
+                    log(f"request form attempt {attempt} failed: {type(exc).__name__}: {exc}")
+                    page.wait_for_timeout(2000)
+            if form_frame is None:
+                raise RuntimeError("Could not open the parking request form after 3 attempts")
+            result["form_frame_url"] = form_frame.url
+            result["form_text_before"] = safe_body_text(form_frame)
+            if "임직원 단기주차 신청" not in result["form_text_before"]:
+                raise RuntimeError("Parking request form text was not found")
+
+            log("filling request form")
+            form_frame.locator("#EMP_CAR_NO").fill(cfg["car_no"], timeout=30000)
+
+            # The date input is controlled by a calendar widget that overrides fill().
+            # Move the visible picker month first, then click the target day cell.
+            target_ymd = parse_ymd(cfg["target_date"])
+            if not target_ymd:
+                raise RuntimeError(f"Invalid target date: {cfg['target_date']}")
+            target_day = str(target_ymd[2])  # "2026.06.22" -> "22"
+            log(f"opening date picker (target date: {cfg['target_date']})")
+            form_frame.locator("#REQ_DATE").click(force=True, timeout=10000)
+            page.wait_for_timeout(600)
+
+            current_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
+            current_ymd = parse_ymd(current_req_date)
+            if current_ymd:
+                diff = month_delta(current_ymd, target_ymd)
+                direction = "next" if diff > 0 else "prev"
+                for _ in range(abs(diff)):
+                    if not click_datepicker_nav(page, direction):
+                        raise RuntimeError(
+                            f"Could not move date picker {direction} from {current_req_date} to {cfg['target_date']}"
+                        )
+                    page.wait_for_timeout(300)
+                if diff:
+                    log(f"date picker moved {diff:+d} month(s)")
+            else:
+                log(f"WARNING: could not parse current request date: {current_req_date!r}")
+
+            date_selected = False
+            deadline = time.time() + 10
+            while not date_selected and time.time() < deadline:
+                for frame in page.frames:
+                    try:
+                        for sel in [
+                            "td.day:not(.disabled):not(.old):not(.new)",
+                            "td.day:not(.disabled)",
+                            "td:not(.disabled):not(.old):not(.new)",
+                        ]:
+                            cells = frame.locator(sel)
+                            count = cells.count()
+                            for i in range(count):
+                                try:
+                                    cell = cells.nth(i)
+                                    if cell.inner_text(timeout=300).strip() == target_day:
+                                        cell.click(timeout=3000)
+                                        date_selected = True
+                                        log(f"date cell clicked (selector: {sel})")
+                                        break
+                                except Exception:
+                                    pass
+                            if date_selected:
+                                break
+                    except Exception:
+                        pass
+                if not date_selected:
+                    page.wait_for_timeout(300)
+
+            if not date_selected:
+                log("WARNING: calendar cell not found, falling back to fill")
+                form_frame.locator("#REQ_DATE").fill(cfg["target_date"], timeout=10000)
+                form_frame.locator("#REQ_DATE").evaluate(
+                    '''el => {
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }'''
+                )
+
+            page.wait_for_timeout(300)
+            selected_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
+            if selected_req_date != cfg["target_date"]:
+                result["date_mismatch"] = {
+                    "expected": cfg["target_date"],
+                    "actual": selected_req_date,
+                }
+                capture_screenshot(page, result, "park_reserve_date_mismatch")
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return
+
+            form_frame.locator("#selFuelTypeCd").select_option(value=cfg["fuel_value"], timeout=30000)
+            form_frame.locator("#REASON").fill(cfg["reason"], timeout=30000)
+
+            result["filled_values"] = form_frame.evaluate(
+                '''() => ({
+                    car_no: document.querySelector('#EMP_CAR_NO')?.value,
+                    req_date: document.querySelector('#REQ_DATE')?.value,
+                    fuel_value: document.querySelector('#selFuelTypeCd')?.value,
+                    fuel_text: document.querySelector('#selFuelTypeCd option:checked')?.textContent?.trim(),
+                    reason: document.querySelector('#REASON')?.value
+                })'''
             )
-            has_failure = any(signal in _tail for signal in failure_signals) or any(
-                any(signal in msg for signal in failure_signals) for msg in result["dialogs"]
-            )
-            has_success = any(signal in _tail for signal in success_signals) or any(
-                any(signal in msg for signal in success_signals) for msg in result["dialogs"]
-            )
-            result["business_success"] = has_success and not has_failure
-            result["business_failure"] = has_failure
+            result["date_selected_via_calendar"] = date_selected
+
+            if cfg["dry_run"]:
+                result["steps"].append("dry_run_skip_submit")
+                log("dry-run: skipping self approval")
+                capture_screenshot(page, result, "park_reserve_dry_run")
+            else:
+                log("clicking self approval")
+                result["submitted"] = True
+                try:
+                    form_frame.locator("#Req").click(force=True, timeout=30000)
+                    page.wait_for_timeout(1000)
+                    capture_screenshot(page, result, "park_reserve_result")
+                    result["confirm_clicked"] = click_visible_text(page, "확인", timeout_ms=10000)
+                    page.wait_for_timeout(8000)
+                except PlaywrightTimeoutError as exc:
+                    result["submit_timeout"] = str(exc)
+                result["after_submit_url"] = page.url
+                result["after_submit_frame_url"] = form_frame.url
+                result["form_text_after"] = safe_body_text(form_frame)
+                # Extract the site's actual result message (the text appended after the
+                # last "목록" nav button — the only place the server response appears).
+                _form_after = result["form_text_after"]
+                if "목록" in _form_after:
+                    _tail = _form_after.rsplit("목록", 1)[-1]
+                    _tail = _tail.replace("확인", "").replace("취소", "").strip()
+                else:
+                    _tail = ""
+                result["site_message"] = _tail
+
+                # Match only against the server-injected tail, NOT the static page instructions.
+                # "불가합니다" / "신청 가능한 날짜" both appear in the static help text and
+                # must not be used as failure signals.
+                failure_signals = (
+                    "신청에 실패했습니다",
+                    "최대 주차 가능 대수를 초과",
+                    "오류가 발생",
+                )
+                success_signals = (
+                    "승인완료",
+                    "신청되었습니다",
+                    "저장되었습니다",
+                    "정상적으로 처리",
+                    "자가승인 되었습니다",
+                )
+                has_failure = any(signal in _tail for signal in failure_signals) or any(
+                    any(signal in msg for signal in failure_signals) for msg in result["dialogs"]
+                )
+                has_success = any(signal in _tail for signal in success_signals) or any(
+                    any(signal in msg for signal in success_signals) for msg in result["dialogs"]
+                )
+                result["business_success"] = has_success and not has_failure
+                result["business_failure"] = has_failure
+        except Exception as exc:
+            import traceback
+            result["automation_error"] = f"{type(exc).__name__}: {exc}"
+            result["automation_traceback"] = traceback.format_exc()[-1500:]
+            log(f"automation error: {exc}")
+            try:
+                result["frame_urls"] = [frame.url for frame in page.frames]
+                capture_screenshot(page, result, "park_reserve_error")
+            except Exception:
+                pass
+
 
         print(json.dumps(result, ensure_ascii=False, indent=2))
         context.close()
@@ -503,6 +536,9 @@ def build_discord_message(result: dict, exit_code: int, started_at: datetime, en
     site_msg = result.get("site_message", "").strip()
     if not result.get("business_success") and site_msg:
         lines.append(f"사유: {site_msg}")
+    auto_err = result.get("automation_error", "").strip()
+    if auto_err:
+        lines.append(f"오류: {trim_text(auto_err, limit=300)}")
     return "\n".join(lines)
 
 
@@ -517,11 +553,11 @@ def build_error_discord_message(stderr: str, stdout: str, exit_code: int, starte
     ])
 
 
-def send_discord_report(channel: str, message: str, filename: str | None = None, file_bytes: bytes | None = None) -> None:
+def send_discord_report(channel: str, message: str, filename: str | None = None, file_bytes: bytes | None = None) -> bool:
     token = load_discord_token()
     if not token or not channel:
         print("[Discord] DISCORD_TOKEN 또는 채널 ID가 없어 전송을 건너뜀", file=sys.stderr)
-        return
+        return False
 
     if len(message) > 1900:
         message = message[:1850] + "\n... (truncated)"
@@ -562,9 +598,10 @@ def send_discord_report(channel: str, message: str, filename: str | None = None,
         completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if completed.returncode == 0:
             print("[Discord] 리포트 전송 완료", file=sys.stderr)
-        else:
-            detail = (completed.stderr or completed.stdout).strip()
-            print(f"[Discord] 리포트 전송 실패: {detail}", file=sys.stderr)
+            return True
+        detail = (completed.stderr or completed.stdout).strip()
+        print(f"[Discord] 리포트 전송 실패: {detail}", file=sys.stderr)
+        return False
 
 
 def ensure_remote_playwright(ssh_target: str) -> None:
@@ -648,6 +685,19 @@ def main() -> int:
     if completed.stderr:
         print(completed.stderr, file=sys.stderr, end="")
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    # Record the actual parking date so the park-notify CronJob can announce
+    # it on the morning of the day itself.
+    if result.get("business_success") and not result.get("dry_run"):
+        try:
+            import park_dates
+
+            park_dates.record_date(
+                result.get("target_date", config.target_date),
+                f"reserved_at={started_at.strftime('%Y.%m.%d %H:%M:%S')}",
+            )
+        except Exception as exc:
+            host_log(f"failed to record parking date: {exc}")
 
     if not args.no_discord:
         send_discord_report(
