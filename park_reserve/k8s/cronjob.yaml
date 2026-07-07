@@ -16,9 +16,10 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          serviceAccountName: park-reserve
           containers:
             - name: park-reserve
-              image: docker.io/bahn1075/park-reserve:2606301720
+              image: docker.io/bahn1075/park-reserve:2607070901
               imagePullPolicy: IfNotPresent
               securityContext:
                 runAsUser: 0

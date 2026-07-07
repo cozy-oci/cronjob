@@ -19,8 +19,8 @@ RUN mkdir -p /home/appuser/.ssh \
     && chmod 700 /home/appuser/.ssh
 
 WORKDIR /app
-COPY --chown=appuser:appuser park_reserve.py /app/park_reserve.py
-RUN chmod 755 /app/park_reserve.py
+COPY --chown=appuser:appuser park_reserve.py park_dates.py park_notify.py /app/
+RUN chmod 755 /app/park_reserve.py /app/park_notify.py
 
 USER appuser
 

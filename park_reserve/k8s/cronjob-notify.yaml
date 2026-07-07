@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: park-notify
+spec:
+  # Announce "자차 출근일" on the morning of the actual parking day.
+  schedule: "30 7 * * *"
+  timeZone: "Asia/Seoul"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: park-reserve
+          containers:
+            - name: park-notify
+              image: docker.io/bahn1075/park-reserve:2607070901
+              imagePullPolicy: IfNotPresent
+              command: ["python3", "/app/park_notify.py"]
+              env:
+                - name: PARK_NOTIFY_DISCORD_CHANNEL
+                  value: "1466985919684018299"
+              envFrom:
+                - secretRef:
+                    name: park-reserve-secret
