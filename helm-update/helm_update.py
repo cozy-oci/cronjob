@@ -20,6 +20,7 @@ GIT_EMAIL = os.environ.get("GIT_EMAIL", "helm-update@bot.local")
 HELM_PATH = os.environ.get("HELM_SUBPATH", "helm")
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 DISCORD_CHANNEL = os.environ.get("DISCORD_CHANNEL", "")
+ALLOW_PRERELEASE = os.environ.get("ALLOW_PRERELEASE", "").lower() in {"1", "true", "yes"}
 
 
 def setup_ssh() -> None:
@@ -44,7 +45,11 @@ def latest_chart_version(repo_url: str, chart: str) -> str:
     entries = index.get("entries", {}).get(chart, [])
     if not entries:
         raise ValueError(f"chart '{chart}' not found in {index_url}")
-    return entries[0]["version"]
+    for entry in entries:
+        version = entry.get("version", "")
+        if version and (ALLOW_PRERELEASE or "-" not in version):
+            return version
+    raise ValueError(f"stable chart version for '{chart}' not found in {index_url}")
 
 
 def update_file(path: Path, old_rev: str, new_rev: str) -> bool:

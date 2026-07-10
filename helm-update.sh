@@ -27,6 +27,10 @@ add_report() {
   REPORT="${REPORT}\n$*"
 }
 
+latest_stable_version() {
+  jq -r '[.[] | .version | select(. != null and (contains("-") | not))][0] // empty'
+}
+
 # --- Git pull (원격 변경사항 먼저 반영) ---
 log "Git pull (rebase) 중..."
 cd /app/mykubernetes
@@ -78,7 +82,7 @@ for APP_DIR in "$HELM_DIR"/*/; do
       helm repo add "$REPO_NAME" "$REPO_URL" --force-update 2>/dev/null || true
       helm repo update "$REPO_NAME" 2>/dev/null || true
     fi
-    LATEST=$(helm search repo "${REPO_NAME}/${CHART}" --versions -o json 2>/dev/null | jq -r '.[0].version') || true
+    LATEST=$(helm search repo "${REPO_NAME}/${CHART}" --versions -o json 2>/dev/null | latest_stable_version) || true
   fi
 
   if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
