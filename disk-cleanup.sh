@@ -137,6 +137,11 @@ add_report "3️⃣ dnf autoremove: ${AUTOREMOVE_OUTPUT}"
 log "[4/9] npm 캐시 정리"
 NPM_BEFORE=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_BEFORE=0
 /home/opc/.nvm/versions/node/v24.13.0/bin/npm cache clean --force --silent 2>/dev/null || true
+# npm 명령이 실패하거나 일부 캐시를 남겨도, 재생성 가능한 콘텐츠 캐시는 확실히 비운다.
+NPM_CONTENT_CACHE="/home/opc/.npm/_cacache/content-v2/sha512"
+if [ -d "$NPM_CONTENT_CACHE" ]; then
+  find "$NPM_CONTENT_CACHE" -mindepth 1 -delete 2>/dev/null || true
+fi
 rm -rf /home/opc/.npm/_npx 2>/dev/null || true
 NPM_AFTER=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_AFTER=0
 FREED_NPM=$((${NPM_BEFORE:-0} - ${NPM_AFTER:-0}))
