@@ -202,17 +202,43 @@ add_report "8️⃣ /tmp: $(numfmt --to=iec $FREED_TMP) 확보"
 # 9. VSCode Server 캐시 정리
 # -------------------------------------------------------
 log "[9/9] VSCode Server 캐시 정리"
+VSCODE_SERVER_DIR="/home/opc/.vscode-server/cli/servers"
 VSCODE_BEFORE=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
-                        /home/opc/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_BEFORE=0
+                        /home/opc/.vscode-server/data/logs \
+                        "$VSCODE_SERVER_DIR" 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_BEFORE=0
 # 확장 설치 캐시 — VSCode가 필요 시 재다운로드하므로 안전하게 삭제
 rm -rf /home/opc/.vscode-server/data/CachedExtensionVSIXs/* 2>/dev/null || true
 # 서버 로그 삭제
 rm -rf /home/opc/.vscode-server/data/logs/* 2>/dev/null || true
+# Stable 서버 바이너리는 가장 최근에 설치된 버전 하나만 남기고 즉시 삭제
+if [[ -d "$VSCODE_SERVER_DIR" ]]; then
+  LATEST_VSCODE_SERVER=$(find "$VSCODE_SERVER_DIR" -maxdepth 1 -mindepth 1 \
+    -type d -name 'Stable-*' -printf '%T@ %p\n' 2>/dev/null |
+    sort -nr | head -1 | cut -d' ' -f2-)
+
+  if [[ -n "$LATEST_VSCODE_SERVER" ]]; then
+    while IFS= read -r SERVER_DIR; do
+      [[ -n "$SERVER_DIR" && "$SERVER_DIR" != "$LATEST_VSCODE_SERVER" ]] || continue
+      rm -rf -- "$SERVER_DIR" 2>/dev/null || true
+    done < <(find "$VSCODE_SERVER_DIR" -maxdepth 1 -mindepth 1 \
+      -type d -name 'Stable-*' -print 2>/dev/null)
+
+    # 삭제한 버전이 LRU 목록에 남지 않도록 보존 버전만 기록
+    LATEST_VSCODE_NAME=${LATEST_VSCODE_SERVER##*/}
+    VSCODE_LRU_TMP="$VSCODE_SERVER_DIR/.lru.json.$$"
+    if printf '["%s"]\n' "$LATEST_VSCODE_NAME" > "$VSCODE_LRU_TMP"; then
+      mv -f -- "$VSCODE_LRU_TMP" "$VSCODE_SERVER_DIR/lru.json"
+    else
+      rm -f -- "$VSCODE_LRU_TMP"
+    fi
+  fi
+fi
 VSCODE_AFTER=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
-                       /home/opc/.vscode-server/data/logs 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
+                       /home/opc/.vscode-server/data/logs \
+                       "$VSCODE_SERVER_DIR" 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
 FREED_VSCODE=$((${VSCODE_BEFORE:-0} - ${VSCODE_AFTER:-0}))
 [ "$FREED_VSCODE" -lt 0 ] && FREED_VSCODE=0
-add_report "9️⃣ VSCode 캐시: $(numfmt --to=iec $FREED_VSCODE) 확보"
+add_report "9️⃣ VSCode 캐시 및 이전 서버: $(numfmt --to=iec $FREED_VSCODE) 확보"
 
 # --- 정리 후 현황 ---
 AFTER=$(df / --output=used,avail,pcent | tail -1 | xargs)
