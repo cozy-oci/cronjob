@@ -23,6 +23,14 @@ spec:
         - /spec/externalName
         - /spec/clusterIP
         - /spec/clusterIPs
+    - group: ""
+      kind: Service
+      name: ucloud-wsl
+      namespace: cronjob
+      jsonPointers:
+        - /spec/externalName
+        - /spec/clusterIP
+        - /spec/clusterIPs
   syncPolicy:
     automated:
       prune: true

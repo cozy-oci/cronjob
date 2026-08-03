@@ -12,3 +12,19 @@ spec:
     - name: ssh
       port: 22
       protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucloud-wsl
+  namespace: cronjob
+  annotations:
+    tailscale.com/tailnet-fqdn: ucloud-wsl.tail651fca.ts.net
+spec:
+  type: ExternalName
+  externalName: placeholder
+  ports:
+    - name: ssh
+      port: 22
+      protocol: TCP
+
