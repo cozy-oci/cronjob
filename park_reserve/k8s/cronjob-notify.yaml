@@ -19,7 +19,7 @@ spec:
           serviceAccountName: park-reserve
           containers:
             - name: park-notify
-              image: docker.io/bahn1075/park-reserve:2607070901
+              image: docker.io/bahn1075/park-reserve:2608030901
               imagePullPolicy: IfNotPresent
               command: ["python3", "/app/park_notify.py"]
               env:

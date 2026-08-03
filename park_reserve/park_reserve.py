@@ -304,15 +304,15 @@ def main():
                     page.wait_for_timeout(300)
 
             if not date_selected:
-                log("WARNING: calendar cell not found, falling back to fill")
-                form_frame.locator("#REQ_DATE").fill(cfg["target_date"], timeout=10000)
-                form_frame.locator("#REQ_DATE").evaluate(
-                    '''el => {
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                        el.dispatchEvent(new Event('blur', { bubbles: true }));
-                    }'''
-                )
+                # The target day cell is missing or disabled — the site deactivates
+                # a date once its capacity is full. Never fall back to filling the
+                # input directly: the calendar widget rewrites it to its own default
+                # before submit, which once sent the request out for the wrong day.
+                result["date_unavailable"] = cfg["target_date"]
+                log("target date cell not clickable (likely full); aborting without submit")
+                capture_screenshot(page, result, "park_reserve_date_unavailable")
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return
 
             page.wait_for_timeout(300)
             selected_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
@@ -344,6 +344,19 @@ def main():
                 log("dry-run: skipping self approval")
                 capture_screenshot(page, result, "park_reserve_dry_run")
             else:
+                # Final safety net: the calendar widget can rewrite #REQ_DATE at any
+                # point after our earlier check, so re-read it right before submitting.
+                final_req_date = form_frame.locator("#REQ_DATE").input_value(timeout=3000)
+                if final_req_date != cfg["target_date"]:
+                    result["date_mismatch"] = {
+                        "expected": cfg["target_date"],
+                        "actual": final_req_date,
+                        "stage": "pre_submit",
+                    }
+                    log(f"pre-submit date mismatch: {final_req_date!r}; aborting without submit")
+                    capture_screenshot(page, result, "park_reserve_date_mismatch")
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    return
                 log("clicking self approval")
                 result["submitted"] = True
                 try:
@@ -521,6 +534,10 @@ def build_discord_message(result: dict, exit_code: int, started_at: datetime, en
         status = "신청 성공"
     elif result.get("business_failure"):
         status = "신청 실패"
+    elif result.get("date_unavailable"):
+        status = "신청 불가(대상일 마감)"
+    elif result.get("date_mismatch"):
+        status = "신청 중단(날짜 불일치)"
     elif result.get("submitted"):
         status = "결과 불명"
     else:
@@ -536,6 +553,13 @@ def build_discord_message(result: dict, exit_code: int, started_at: datetime, en
     site_msg = result.get("site_message", "").strip()
     if not result.get("business_success") and site_msg:
         lines.append(f"사유: {site_msg}")
+    if result.get("date_unavailable"):
+        lines.append("사유: 달력에서 대상일이 비활성화되어 신청하지 않음 (이용가능대수 초과 추정)")
+    mismatch = result.get("date_mismatch")
+    if mismatch:
+        lines.append(
+            f"사유: 신청일자 불일치로 제출 중단 (기대 {mismatch.get('expected')} / 실제 {mismatch.get('actual')})"
+        )
     auto_err = result.get("automation_error", "").strip()
     if auto_err:
         lines.append(f"오류: {trim_text(auto_err, limit=300)}")
