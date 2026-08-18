@@ -76,7 +76,7 @@ add_report "📊 **정리 전**: $BEFORE"
 # -------------------------------------------------------
 # 1. 시스템 로그 정리
 # -------------------------------------------------------
-log "[1/9] 시스템 로그 정리"
+log "[1/10] 시스템 로그 정리"
 FREED_LOG=0
 
 # 오래된 로그 파일 삭제 (7일 이상) — *.log-* 및 *.log.[0-9]* 패턴 모두 처리
@@ -118,7 +118,7 @@ add_report "1️⃣ 시스템 로그: $(numfmt --to=iec $FREED_LOG) 확보"
 # -------------------------------------------------------
 # 2. journald 로그 정리 (7일 보관)
 # -------------------------------------------------------
-log "[2/9] journald 정리"
+log "[2/10] journald 정리"
 JOURNAL_BEFORE=$(sudo journalctl --disk-usage 2>/dev/null | grep -oP '[\d.]+[KMGT]' || echo "0")
 sudo journalctl --vacuum-time=7d --quiet 2>/dev/null || true
 JOURNAL_AFTER=$(sudo journalctl --disk-usage 2>/dev/null | grep -oP '[\d.]+[KMGT]' || echo "0")
@@ -127,14 +127,16 @@ add_report "2️⃣ journald: ${JOURNAL_BEFORE} → ${JOURNAL_AFTER}"
 # -------------------------------------------------------
 # 3. dnf autoremove (불필요 패키지 제거) — clean all 전에 먼저 실행
 # -------------------------------------------------------
-log "[3/9] dnf autoremove"
+log "[3/10] dnf autoremove"
+# /usr/lib/python3.9 및 /usr/lib/modules는 설치 패키지가 소유하는 시스템 파일이다.
+# 직접 삭제하지 않고 dnf autoremove로 더 이상 필요하지 않은 패키지만 안전하게 제거한다.
 AUTOREMOVE_OUTPUT=$(sudo dnf autoremove -y 2>/dev/null | grep -E "^Freed space:|^Nothing to do") || AUTOREMOVE_OUTPUT="Nothing to do"
 add_report "3️⃣ dnf autoremove: ${AUTOREMOVE_OUTPUT}"
 
 # -------------------------------------------------------
 # 4. npm 캐시 정리
 # -------------------------------------------------------
-log "[4/9] npm 캐시 정리"
+log "[4/10] npm 캐시 정리"
 NPM_BEFORE=$(du -sb /home/opc/.npm/_cacache /home/opc/.npm/_npx 2>/dev/null | awk '{s+=$1}END{print s+0}') || NPM_BEFORE=0
 /home/opc/.nvm/versions/node/v24.13.0/bin/npm cache clean --force --silent 2>/dev/null || true
 # npm 명령이 실패하거나 일부 캐시를 남겨도, 재생성 가능한 콘텐츠 캐시는 확실히 비운다.
@@ -151,7 +153,7 @@ add_report "4️⃣ npm 캐시(_cacache+_npx): $(numfmt --to=iec $FREED_NPM) 확
 # -------------------------------------------------------
 # 5. 유저 캐시 정리 (Homebrew, mozilla, pip)
 # -------------------------------------------------------
-log "[5/9] 유저 캐시 정리"
+log "[5/10] 유저 캐시 정리"
 USER_BEFORE=$(du_bytes /home/opc/.cache)
 rm -rf /home/opc/.cache/Homebrew/* 2>/dev/null || true
 rm -rf /home/opc/.cache/mozilla/* 2>/dev/null || true
@@ -168,7 +170,7 @@ add_report "5️⃣ 유저 캐시: $(numfmt --to=iec $FREED_USER) 확보"
 # -------------------------------------------------------
 # 6. Docker 미사용 이미지 정리
 # -------------------------------------------------------
-log "[6/9] Docker 미사용 이미지 정리"
+log "[6/10] Docker 미사용 이미지 정리"
 DOCKER_BEFORE=$(docker system df --format '{{.Size}}' 2>/dev/null | head -1 || echo "0")
 DOCKER_OUTPUT=$(docker system prune -a -f 2>/dev/null | tail -1 || echo "Total reclaimed space: 0B")
 DOCKER_FREED=$(echo "$DOCKER_OUTPUT" | grep -oP '[\d.]+\s*[KMGT]?B' || echo "0B")
@@ -177,7 +179,7 @@ add_report "6️⃣ Docker 정리: ${DOCKER_FREED} 확보"
 # -------------------------------------------------------
 # 7. 패키지 캐시 정리 (dnf + PackageKit) — autoremove 후 마지막에 정리
 # -------------------------------------------------------
-log "[7/9] 패키지 캐시 정리"
+log "[7/10] 패키지 캐시 정리"
 CACHE_BEFORE=$(sudo du -sb /var/cache/dnf /var/cache/PackageKit 2>/dev/null | awk '{s+=$1}END{print s+0}')
 sudo dnf clean all --quiet 2>/dev/null || true
 sudo rm -rf /var/cache/PackageKit/* 2>/dev/null || true
@@ -189,7 +191,7 @@ add_report "7️⃣ 패키지 캐시: $(numfmt --to=iec $FREED_CACHE) 확보"
 # -------------------------------------------------------
 # 8. /tmp 오래된 파일 정리 (7일 이상)
 # -------------------------------------------------------
-log "[8/9] /tmp 정리"
+log "[8/10] /tmp 정리"
 TMP_BEFORE=$(du_bytes /tmp)
 find /tmp -type f -mtime +7 -not -path "/tmp/systemd-*" -delete 2>/dev/null || true
 find /tmp -type d -empty -mtime +7 -not -path "/tmp" -delete 2>/dev/null || true
@@ -199,9 +201,22 @@ FREED_TMP=$((${TMP_BEFORE:-0} - ${TMP_AFTER:-0}))
 add_report "8️⃣ /tmp: $(numfmt --to=iec $FREED_TMP) 확보"
 
 # -------------------------------------------------------
-# 9. VSCode Server 캐시 정리
+# 9. /var/tmp 오래된 파일 정리 (7일 이상 미사용)
 # -------------------------------------------------------
-log "[9/9] VSCode Server 캐시 정리"
+log "[9/10] /var/tmp 정리"
+VAR_TMP_BEFORE=$(sudo du -sb /var/tmp 2>/dev/null | awk '{print $1}' || echo 0)
+# /var/tmp는 재부팅 후에도 보존될 수 있으므로, 최근 7일간 접근한 파일은 유지한다.
+sudo find /var/tmp -mindepth 1 -type f -atime +7 -delete 2>/dev/null || true
+sudo find /var/tmp -mindepth 1 -type d -empty -mtime +7 -delete 2>/dev/null || true
+VAR_TMP_AFTER=$(sudo du -sb /var/tmp 2>/dev/null | awk '{print $1}' || echo 0)
+FREED_VAR_TMP=$((${VAR_TMP_BEFORE:-0} - ${VAR_TMP_AFTER:-0}))
+[ "$FREED_VAR_TMP" -lt 0 ] && FREED_VAR_TMP=0
+add_report "9️⃣ /var/tmp: $(numfmt --to=iec $FREED_VAR_TMP) 확보"
+
+# -------------------------------------------------------
+# 10. VSCode Server 캐시 정리
+# -------------------------------------------------------
+log "[10/10] VSCode Server 캐시 정리"
 VSCODE_SERVER_DIR="/home/opc/.vscode-server/cli/servers"
 VSCODE_BEFORE=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
                         /home/opc/.vscode-server/data/logs \
@@ -238,7 +253,7 @@ VSCODE_AFTER=$(du -sb /home/opc/.vscode-server/data/CachedExtensionVSIXs \
                        "$VSCODE_SERVER_DIR" 2>/dev/null | awk '{s+=$1}END{print s+0}') || VSCODE_AFTER=0
 FREED_VSCODE=$((${VSCODE_BEFORE:-0} - ${VSCODE_AFTER:-0}))
 [ "$FREED_VSCODE" -lt 0 ] && FREED_VSCODE=0
-add_report "9️⃣ VSCode 캐시 및 이전 서버: $(numfmt --to=iec $FREED_VSCODE) 확보"
+add_report "🔟 VSCode 캐시 및 이전 서버: $(numfmt --to=iec $FREED_VSCODE) 확보"
 
 # --- 정리 후 현황 ---
 AFTER=$(df / --output=used,avail,pcent | tail -1 | xargs)
