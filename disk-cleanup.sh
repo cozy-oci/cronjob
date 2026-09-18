@@ -168,6 +168,21 @@ FREED_USER=$((${USER_BEFORE:-0} - ${USER_AFTER:-0}))
 add_report "5️⃣ 유저 캐시: $(numfmt --to=iec $FREED_USER) 확보"
 
 # -------------------------------------------------------
+# 5a. uv 다운로드·빌드 캐시 정리 (가상환경은 유지)
+# -------------------------------------------------------
+log "[5a/10] uv 캐시 정리"
+UV_CACHE_DIR="/home/opc/.cache/uv"
+UV_BEFORE=$(du_bytes "$UV_CACHE_DIR")
+if command -v uv >/dev/null 2>&1 && [ -d "$UV_CACHE_DIR" ]; then
+  # --force 없이 실행해 사용 중인 캐시는 uv가 보호하게 한다.
+  uv cache clean --cache-dir "$UV_CACHE_DIR" --quiet 2>/dev/null || true
+fi
+UV_AFTER=$(du_bytes "$UV_CACHE_DIR")
+FREED_UV=$((${UV_BEFORE:-0} - ${UV_AFTER:-0}))
+[ "$FREED_UV" -lt 0 ] && FREED_UV=0
+add_report "🧰 uv 캐시: $(numfmt --to=iec $FREED_UV) 확보 (Headroom 환경 유지)"
+
+# -------------------------------------------------------
 # 6. Docker 미사용 이미지 정리
 # -------------------------------------------------------
 log "[6/10] Docker 미사용 이미지 정리"
