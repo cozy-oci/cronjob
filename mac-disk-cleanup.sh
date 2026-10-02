@@ -7,8 +7,8 @@
 # 작성: 2026-06-12
 #
 # 설계 원칙:
-#   - sudo 미사용: cron/launchd는 사용자 권한으로 실행되므로 시스템 영역(/var/log 등)은
-#     건드리지 않고 사용자 홈/캐시만 정리한다. (/var/log는 newsyslog가 자동 회전)
+#   - 사용자 홈/캐시만 정리한다. 관리자 소유 휴지통 항목에 한해 비대화식 sudo 사용.
+#     시스템 영역(/var/log 등)은 건드리지 않는다. (/var/log는 newsyslog가 자동 회전)
 #   - BSD 유틸 기준: du -sk, stat -f, df -Pk, grep -oE 등 macOS 기본 명령만 사용.
 #   - 데이터 안전: 캐시/로그/임시파일만, 그것도 mtime/atime 경과 기준으로만 삭제.
 #     모델/VM 데이터(.ollama, .minikube, ~/.cache/huggingface, .lmstudio 등)는
@@ -91,32 +91,32 @@ du_bytes() {
 }
 
 gb() {
-  awk -v bytes="${1:-0}" 'BEGIN { printf "%.2fGB", bytes / 1024 / 1024 / 1024 }'
+  awk -v bytes="${1:-0}" 'BEGIN { printf "%.1fGB", bytes / 1000000000 }'
 }
 
 size_to_gb() {
   local value="${1:-0B}"
   value="${value//[[:space:]]/}"
-  if [[ "$value" =~ ^([0-9.]+)([KkMGT]?i?B?|B)$ ]]; then
-    local unit="${BASH_REMATCH[2]}"
-    unit="${unit//i/}"
+  if [[ "$value" =~ ^([0-9]+([.][0-9]+)?)([KkMmGgTt]?i?[Bb])$ ]]; then
+    local number="${BASH_REMATCH[1]}" unit="${BASH_REMATCH[3]}" base=1000
+    [[ "$unit" == *iB ]] && base=1024
     unit=$(printf '%s' "$unit" | tr '[:lower:]' '[:upper:]')
-    awk -v n="${BASH_REMATCH[1]}" -v unit="$unit" '
+    awk -v n="$number" -v unit="$unit" -v base="$base" '
       BEGIN {
-        if (unit == "K" || unit == "KB") n *= 1024
-        else if (unit == "M" || unit == "MB") n *= 1024 * 1024
-        else if (unit == "G" || unit == "GB") n *= 1024 * 1024 * 1024
-        else if (unit == "T" || unit == "TB") n *= 1024 * 1024 * 1024 * 1024
-        printf "%.2fGB", n / 1024 / 1024 / 1024
+        if (unit ~ /^K/) n *= base
+        else if (unit ~ /^M/) n *= base * base
+        else if (unit ~ /^G/) n *= base * base * base
+        else if (unit ~ /^T/) n *= base * base * base * base
+        printf "%.1fGB", n / 1000000000
       }'
   else
     printf "%s" "$value"
   fi
 }
 
-# BSD df: -P(POSIX) -k(1024블록). 컬럼 = Filesystem 1024-blocks Used Avail Capacity Mounted
+# BSD df: -P(POSIX) -k(1024블록). 홈은 APFS 데이터 볼륨이며 /는 읽기 전용 시스템 볼륨이다.
 df_gb() {
-  df -Pk / | awk 'NR == 2 { printf "used=%.2fGB avail=%.2fGB pcent=%s", $3 / 1024 / 1024, $4 / 1024 / 1024, $5 }'
+  df -Pk "$HOME" | awk 'NR == 2 { printf "사용 %.1fGB · 여유 %.1fGB · 사용률 %s", $3 * 1024 / 1000000000, $4 * 1024 / 1000000000, $5 }'
 }
 
 empty_dir_contents() {
@@ -127,6 +127,17 @@ empty_dir_contents() {
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 }
 
+empty_trash() {
+  local trash_dir="$1" entry
+  [[ -d "$trash_dir" && ! -L "$trash_dir" ]] || return 0
+  while IFS= read -r -d '' entry; do
+    rm -rf -- "$entry" 2>/dev/null || true
+    if [[ -e "$entry" && "$(stat -f %u "$entry" 2>/dev/null)" == 0 ]]; then
+      sudo -n rm -rf -- "$entry" 2>/dev/null || true
+    fi
+  done < <(find "$trash_dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+}
+
 # 디렉토리 내 mtime N일 경과 일반 파일 + 빈 디렉토리만 삭제 (동일 볼륨 한정).
 # 캐시/로그 정리의 표준 패턴: 재생성 가능한 파일만, 오래된 것만.
 prune_old() {
@@ -134,6 +145,14 @@ prune_old() {
   [[ -d "$dir" ]] || return 0
   find "$dir" -xdev -type f -mtime +"$days" -delete 2>/dev/null || true
   find "$dir" -xdev -mindepth 1 -type d -empty -mtime +"$days" -delete 2>/dev/null || true
+}
+
+# -delete는 macOS find에서 -depth를 켜므로 -prune과 함께 쓰지 않는다.
+prune_general_cache() {
+  local cache_dir="$1"
+  [[ -d "$cache_dir" ]] || return 0
+  find "$cache_dir" -xdev -type f -atime +30 \
+    ! -path "$cache_dir/huggingface/*" ! -path "$cache_dir/uv/*" -delete 2>/dev/null || true
 }
 
 # --- 정리 전 현황 ---
@@ -284,7 +303,7 @@ add_report "6️⃣ 임시 디렉토리: $(gb "$FREED_TMP") 확보"
 # -------------------------------------------------------
 log "[7/12] 휴지통 비우기"
 TRASH_BEFORE=$(du_bytes "$HOME/.Trash")
-empty_dir_contents "$HOME/.Trash"
+empty_trash "$HOME/.Trash"
 TRASH_AFTER=$(du_bytes "$HOME/.Trash")
 FREED_TRASH=$((${TRASH_BEFORE:-0} - ${TRASH_AFTER:-0}))
 [ "$FREED_TRASH" -lt 0 ] && FREED_TRASH=0
@@ -361,12 +380,10 @@ CACHE_TARGETS=(
   "$HOME/Library/Logs"
 )
 CACHE_BEFORE=$(du_bytes "${CACHE_TARGETS[@]}")
-# huggingface/ollama 등 모델 blob 저장소는 제외하고 일반 캐시 파일만 atime 30일 경과 삭제
-find "$HOME/.cache" -xdev \( -path '*/huggingface/*' -o -path '*/huggingface' \) -prune \
-  -o -type f -atime +30 -delete 2>/dev/null || true
+# 모델 저장소와 uv 캐시는 제외한다. uv는 자체 명령으로 정리한다.
+prune_general_cache "$HOME/.cache"
 # HF 캐시 내부의 로그/임시 파일만 안전하게 정리 (blob/snapshot은 보존)
 find "$HOME/.cache/huggingface" -xdev -type f -path '*/logs/*' -mtime +14 -delete 2>/dev/null || true
-command -v uv >/dev/null 2>&1 && uv cache prune >/dev/null 2>&1 || true
 # 사용자 앱 로그 / 진단 리포트 (시스템 로그 /var/log 는 newsyslog가 회전)
 find "$HOME/Library/Logs" -xdev -type f -mtime +30 -delete 2>/dev/null || true
 find "$HOME/Library/Logs" -xdev -mindepth 1 -type d -empty -mtime +30 -delete 2>/dev/null || true
@@ -374,6 +391,16 @@ CACHE_AFTER=$(du_bytes "${CACHE_TARGETS[@]}")
 FREED_CACHE=$((${CACHE_BEFORE:-0} - ${CACHE_AFTER:-0}))
 [ "$FREED_CACHE" -lt 0 ] && FREED_CACHE=0
 add_report "🔟 ~/.cache·Logs: $(gb "$FREED_CACHE") 확보"
+
+UV_CACHE_DIR="$HOME/.cache/uv"
+UV_BEFORE=$(du_bytes "$UV_CACHE_DIR")
+if command -v uv >/dev/null 2>&1 && [[ -d "$UV_CACHE_DIR" ]]; then
+  uv cache clean --cache-dir "$UV_CACHE_DIR" --quiet 2>/dev/null || true
+fi
+UV_AFTER=$(du_bytes "$UV_CACHE_DIR")
+FREED_UV=$((UV_BEFORE - UV_AFTER))
+[ "$FREED_UV" -lt 0 ] && FREED_UV=0
+add_report "🧰 uv 캐시: $(gb "$FREED_UV") 확보 (설치 환경 유지)"
 
 # -------------------------------------------------------
 # 11. 홈 디렉토리 로그/찌꺼기 및 .DS_Store 정리
@@ -430,6 +457,7 @@ ADVISORY_DIRS=(
   "$HOME/.minikube"
   "$HOME/.cache/huggingface"
   "$HOME/.lmstudio"
+  "$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack"
   "$HOME/Library/Application Support/MobileSync/Backup"
 )
 ADVISORY=""
