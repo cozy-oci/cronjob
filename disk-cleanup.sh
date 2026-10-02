@@ -67,8 +67,27 @@ du_bytes() {
   { du -sb "$@" 2>/dev/null || true; } | awk '{sum += $1} END {print sum + 0}'
 }
 
+format_disk_usage() {
+  awk 'NR == 2 {printf "사용 %.1fGB · 여유 %.1fGB · 사용률 %s", $1 / 1000000000, $2 / 1000000000, $3}'
+}
+
+prune_obsolete_vscode_extensions() {
+  local extensions_dir="$1"
+  local extension_name
+  [[ -f "$extensions_dir/.obsolete" && -f "$extensions_dir/extensions.json" ]] || return 0
+  jq -e 'type == "array"' "$extensions_dir/extensions.json" >/dev/null 2>&1 || return 0
+
+  while IFS= read -r extension_name; do
+    [[ "$extension_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+    [[ -d "$extensions_dir/$extension_name" && ! -L "$extensions_dir/$extension_name" ]] || continue
+    jq -e --arg name "$extension_name" 'any(.[]; .relativeLocation == $name)' \
+      "$extensions_dir/extensions.json" >/dev/null 2>&1 && continue
+    rm -rf -- "$extensions_dir/$extension_name"
+  done < <(jq -r 'to_entries[] | select(.value == true) | .key' "$extensions_dir/.obsolete" 2>/dev/null)
+}
+
 # --- 정리 전 현황 ---
-BEFORE=$(df / --output=used,avail,pcent | tail -1 | xargs)
+BEFORE=$(df -B1 / --output=used,avail,pcent | format_disk_usage)
 log "=== 디스크 정리 시작 ($TIMESTAMP) ==="
 log "정리 전: $BEFORE"
 add_report "📊 **정리 전**: $BEFORE"
@@ -270,8 +289,18 @@ FREED_VSCODE=$((${VSCODE_BEFORE:-0} - ${VSCODE_AFTER:-0}))
 [ "$FREED_VSCODE" -lt 0 ] && FREED_VSCODE=0
 add_report "🔟 VSCode 캐시 및 이전 서버: $(numfmt --to=iec $FREED_VSCODE) 확보"
 
+# VS Code가 폐기 대상으로 표시한 확장만 제거한다. 활성 확장은 extensions.json으로 재확인한다.
+log "[10a/10] VSCode 폐기 확장 정리"
+VSCODE_EXTENSIONS_DIR="/home/opc/.vscode-server/extensions"
+EXT_BEFORE=$(du_bytes "$VSCODE_EXTENSIONS_DIR")
+prune_obsolete_vscode_extensions "$VSCODE_EXTENSIONS_DIR"
+EXT_AFTER=$(du_bytes "$VSCODE_EXTENSIONS_DIR")
+FREED_EXT=$((EXT_BEFORE - EXT_AFTER))
+[ "$FREED_EXT" -lt 0 ] && FREED_EXT=0
+add_report "🧩 VSCode 폐기 확장: $(numfmt --to=iec $FREED_EXT) 확보"
+
 # --- 정리 후 현황 ---
-AFTER=$(df / --output=used,avail,pcent | tail -1 | xargs)
+AFTER=$(df -B1 / --output=used,avail,pcent | format_disk_usage)
 log "정리 후: $AFTER"
 log "=== 디스크 정리 완료 ==="
 
