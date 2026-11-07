@@ -16,6 +16,18 @@ LOG_FILE="/tmp/package-update-$(date +%Y%m%d).log"
 SEPARATOR="============================================================"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
+LOG_START=0
+if [[ -f "$LOG_FILE" ]]; then
+    LOG_START=$(wc -c < "$LOG_FILE")
+fi
+
+should_notify_discord() {
+    local file="$1"
+    local offset="$2"
+    # Only inspect this run; the daily log may contain earlier failures.
+    tail -c "+$((offset + 1))" "$file" \
+        | grep -Ei '(^|[[:space:]]|\[)(err!?|errors?|fail(ed|ure)?|fatal)([[:space:]:!]|\]|$)|실패|에러|오류' > /dev/null
+}
 
 load_discord_env() {
     if [[ -z "${DISCORD_TOKEN:-}" || -z "${CHANNEL_UPDATE:-}" ]]; then
@@ -192,4 +204,6 @@ $(empty_if_blank "$NPM_UPDATES")
 로그: $LOG_FILE
 EOF
 )
-send_discord_report "${CHANNEL_UPDATE:-}" "$DISCORD_MESSAGE"
+if should_notify_discord "$LOG_FILE" "$LOG_START"; then
+    send_discord_report "${CHANNEL_UPDATE:-}" "$DISCORD_MESSAGE"
+fi

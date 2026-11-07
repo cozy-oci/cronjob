@@ -71,6 +71,11 @@ fetch_cost() {
         2>/dev/null
 }
 
+should_notify_discord() {
+    # A 200% increase means three times the previous cost; zero has no defined rate.
+    awk -v current="$1" -v previous="$2" 'BEGIN { exit !(previous > 0 && current >= previous * 3) }'
+}
+
 # 1. 이번 달 1일 ~ 어제: 일별 데이터 수집
 MONTHLY_JSON=$(fetch_cost "$MONTH_START" "$TODAY")
 
@@ -95,6 +100,10 @@ YESTERDAY_COST=$(echo "$MONTHLY_JSON" | jq --arg y "$YESTERDAY" '
     | add // 0
 ')
 
+# Fetch separately so the comparison also works across month boundaries.
+DAY_BEFORE_YESTERDAY_JSON=$(fetch_cost "$DAY_BEFORE_YESTERDAY" "$YESTERDAY")
+DAY_BEFORE_YESTERDAY_COST=$(echo "$DAY_BEFORE_YESTERDAY_JSON" | jq '[.data.items[]["computed-amount"]] | add // 0')
+
 # KRW 환산
 MONTHLY_SUM_KRW=$(to_krw "$MONTHLY_SUM")
 AVG_TO_DBY_KRW=$(to_krw "$AVG_TO_DBY")
@@ -116,4 +125,6 @@ REPORT=$(
 )
 
 printf '%s\n' "$REPORT"
-send_discord_report "${CHANNEL_PRICING:-}" "$REPORT"
+if should_notify_discord "$YESTERDAY_COST" "$DAY_BEFORE_YESTERDAY_COST"; then
+    send_discord_report "${CHANNEL_PRICING:-}" "$REPORT"
+fi
