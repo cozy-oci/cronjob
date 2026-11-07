@@ -156,7 +156,9 @@ if sudo dnf update -y > "$DNF_LOG" 2>&1; then
     cat "$DNF_LOG" >> "$LOG_FILE"
     log "[1/3] dnf update 완료"
 else
-    DNF_RESULT="실패 (exit code: $?)"
+    DNF_EXIT_CODE=$?
+    DNF_RESULT="실패 (exit code: $DNF_EXIT_CODE)"
+    UPDATE_FAILED=1
     cat "$DNF_LOG" >> "$LOG_FILE"
     log "[1/3] dnf update $DNF_RESULT"
 fi
@@ -168,7 +170,9 @@ if brew upgrade >> "$LOG_FILE" 2>&1; then
     BREW_RESULT="완료"
     log "[2/3] brew upgrade 완료"
 else
-    BREW_RESULT="실패 (exit code: $?)"
+    BREW_EXIT_CODE=$?
+    BREW_RESULT="실패 (exit code: $BREW_EXIT_CODE)"
+    UPDATE_FAILED=1
     log "[2/3] brew upgrade $BREW_RESULT"
 fi
 
@@ -181,12 +185,18 @@ if npm update -g >> "$LOG_FILE" 2>&1; then
     NPM_RESULT="완료"
     log "[3/3] npm update -g 완료"
 else
-    NPM_RESULT="실패 (exit code: $?)"
+    NPM_EXIT_CODE=$?
+    NPM_RESULT="실패 (exit code: $NPM_EXIT_CODE)"
+    UPDATE_FAILED=1
     log "[3/3] npm update -g $NPM_RESULT"
 fi
 
 log "$SEPARATOR"
-log "패키지 업데이트 완료 → 로그: $LOG_FILE"
+if [[ "${UPDATE_FAILED:-0}" -eq 0 ]]; then
+    log "패키지 업데이트 완료 → 로그: $LOG_FILE"
+else
+    log "패키지 업데이트 실패 → 로그: $LOG_FILE"
+fi
 log "$SEPARATOR"
 
 DISCORD_MESSAGE=$(cat <<EOF
@@ -204,6 +214,4 @@ $(empty_if_blank "$NPM_UPDATES")
 로그: $LOG_FILE
 EOF
 )
-if should_notify_discord "$LOG_FILE" "$LOG_START"; then
-    send_discord_report "${CHANNEL_UPDATE:-}" "$DISCORD_MESSAGE"
-fi
+send_discord_report "${CHANNEL_UPDATE:-}" "$DISCORD_MESSAGE"
