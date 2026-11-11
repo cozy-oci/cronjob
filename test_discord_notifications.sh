@@ -25,6 +25,29 @@ if should_notify_discord "$fixture/update.log" 0; then
     exit 1
 fi
 
+# Exercise the report's actual dispatch so an unconditional send is caught.
+for result in success error; do
+    (
+        LOG_FILE="$fixture/dispatch-$result.log"
+        printf 'Error: previous run\n' > "$LOG_FILE"
+        LOG_START=$(wc -c < "$LOG_FILE")
+        if [[ "$result" == error ]]; then
+            printf 'Error: download failed\n' >> "$LOG_FILE"
+        else
+            printf 'All updates completed\n' >> "$LOG_FILE"
+        fi
+        DNF_UPDATES='' BREW_UPDATES='' NPM_UPDATES=''
+        source <(sed -n '/^empty_if_blank()/,/^}/p' "$script_dir/package-update.sh")
+        send_discord_report() { printf '%s\n' "$2" >> "$fixture/sent-$result"; }
+        source <(sed -n '/^DISCORD_MESSAGE=/,$p' "$script_dir/package-update.sh")
+    )
+done
+if [[ -e "$fixture/sent-success" ]]; then
+    echo 'FAIL: successful package update sent a Discord report' >&2
+    exit 1
+fi
+[[ -s "$fixture/sent-error" ]]
+
 source <(sed -n '/^should_notify_discord()/,/^}/p' "$script_dir/daily-oci-cost-report.sh")
 for pair in '10 10' '20 10' '29.99 10' '0 10' '10 0' '0 0'; do
     read -r current previous <<< "$pair"

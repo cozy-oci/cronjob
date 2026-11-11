@@ -214,4 +214,6 @@ $(empty_if_blank "$NPM_UPDATES")
 로그: $LOG_FILE
 EOF
 )
-send_discord_report "${CHANNEL_UPDATE:-}" "$DISCORD_MESSAGE"
+if should_notify_discord "$LOG_FILE" "$LOG_START"; then
+    send_discord_report "${CHANNEL_UPDATE:-}" "$DISCORD_MESSAGE"
+fi
