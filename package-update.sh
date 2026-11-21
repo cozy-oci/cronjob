@@ -43,8 +43,6 @@ load_discord_env() {
 send_discord_report() {
     local channel="${1:-}"
     local message="$2"
-    local chunk=""
-    local line
 
     load_discord_env
     channel="${channel:-${CHANNEL_UPDATE:-}}"
@@ -54,25 +52,7 @@ send_discord_report() {
         return 0
     fi
 
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if (( ${#chunk} + ${#line} + 1 > 1900 )); then
-            post_discord_message "$channel" "$chunk"
-            chunk=""
-        fi
-        chunk+="${line}"$'\n'
-    done <<< "$message"
-
-    [[ -n "$chunk" ]] && post_discord_message "$channel" "$chunk"
-}
-
-post_discord_message() {
-    local channel="$1"
-    local message="$2"
-
-    if ! curl -fsS -X POST "https://discord.com/api/v10/channels/${channel}/messages" \
-        -H "Authorization: Bot ${DISCORD_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$(jq -n --arg msg "$message" '{content:$msg}')" >/dev/null; then
+    if ! python3 "$(dirname -- "${BASH_SOURCE[0]}")/discord_notify.py" --channel "$channel" -- "$message"; then
         log "[Discord] 리포트 전송 실패"
     fi
 }

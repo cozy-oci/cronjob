@@ -48,20 +48,27 @@ if [[ -e "$fixture/sent-success" ]]; then
 fi
 [[ -s "$fixture/sent-error" ]]
 
-source <(sed -n '/^should_notify_discord()/,/^}/p' "$script_dir/daily-oci-cost-report.sh")
-for pair in '10 10' '20 10' '29.99 10' '0 10' '10 0' '0 0'; do
+cost_report="$script_dir/ubnutu/daily-oci-cost-report.sh"
+source <(sed -n '/^should_notify_discord()/,/^}/p' "$cost_report")
+for pair in '10 10' '19.99 10' '0 10' '10 0' '0 0'; do
     read -r current previous <<< "$pair"
     if should_notify_discord "$current" "$previous"; then
         echo "FAIL: unexpected cost alert: $pair" >&2
         exit 1
     fi
 done
-should_notify_discord 30 10
-should_notify_discord 30.01 10
-should_notify_discord 0.03 0.01
+should_notify_discord 20 10
+should_notify_discord 20.01 10
+should_notify_discord 0.02 0.01
 
 # Run the cost report at a month boundary with external services replaced.
-for current in 29.99 30; do
+mkdir "$fixture/discord-home"
+cat > "$fixture/discord-home/.discord.env" <<'EOF'
+export DISCORD_TOKEN=test-discord-token
+export CHANNEL_COST=123
+export CHANNEL_UPDATE=456
+EOF
+for current in 19.99 20; do
     (
         date() {
             case "$*" in
@@ -76,7 +83,8 @@ for current in 29.99 30; do
             if [[ "$*" == *'https://open.er-api.com/'* ]]; then
                 echo '{"rates":{"KRW":1100}}'
             else
-                printf '%s\n' "$*" >> "$fixture/posts-$current"
+                printf 'FAIL: unexpected curl request from cost report\n' >&2
+                return 1
             fi
         }
         oci() {
@@ -96,10 +104,110 @@ for current in 29.99 30; do
                 return 1
             fi
         }
-        export DISCORD_TOKEN=test CHANNEL_PRICING=test
-        source "$script_dir/daily-oci-cost-report.sh" > "$fixture/report-$current"
+        python3() {
+            [[ "$1" == "$script_dir/ubnutu/../discord_notify.py" && "$2" == --channel &&
+                "$3" == 123 && "$4" == -- && "$DISCORD_TOKEN" == test-discord-token ]] || return 1
+            printf '%s\n' "$5" >> "$fixture/posts-$current"
+        }
+        export HOME="$fixture/discord-home"
+        unset DISCORD_TOKEN CHANNEL_COST CHANNEL_PRICING CHANNEL_UPDATE
+        source "$cost_report" > "$fixture/report-$current"
     )
 done
-[[ ! -e "$fixture/posts-29.99" ]]
-[[ -s "$fixture/posts-30" ]]
+[[ ! -e "$fixture/posts-19.99" ]]
+grep -Fq 'OCI 일일 비용 리포트' "$fixture/posts-20"
+
+# Exercise app updates with stand-ins for package managers and Discord.
+mkdir "$fixture/bin" "$fixture/ubnutu"
+sed "s|/home/linuxbrew/.linuxbrew/bin/brew|brew|; s|/home/ubuntu/.local/bin/codex|codex|" \
+    "$script_dir/ubnutu/app-update.sh" > "$fixture/ubnutu/app-update.sh"
+cat > "$fixture/bin/sudo" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TRACE"
+case "$1 $2" in
+    'apt update')
+        if [ "${APT_STATUS:-0}" -ne 0 ]; then
+            echo 'E: Could not resolve packages.example.test' >&2
+        fi
+        exit "${APT_STATUS:-0}"
+        ;;
+    'snap refresh')
+        if [ "${SNAP_STATUS:-0}" -ne 0 ]; then
+            echo 'error: cannot reach https://demo:example-secret@store.example.test'
+        fi
+        exit "${SNAP_STATUS:-0}"
+        ;;
+esac
+EOF
+cat > "$fixture/bin/brew" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$fixture/bin/codex" <<'EOF'
+#!/bin/sh
+echo 'codex update' >> "$TRACE"
+echo 'Codex is up to date'
+EOF
+cat > "$fixture/bin/python3" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >> "$TRACE.alert"
+exit "${DISCORD_STATUS:-0}"
+EOF
+chmod +x "$fixture/bin/"*
+update_app() (
+    cd /
+    export PATH="$fixture/bin:$PATH" TRACE="$fixture/app-$1"
+    sh "$fixture/ubnutu/app-update.sh" > "$TRACE.stdout" 2> "$TRACE.stderr"
+)
+update_app success
+[[ ! -e "$fixture/app-success.alert" ]]
+grep -Fxq 'apt upgrade -y' "$fixture/app-success"
+status=0
+APT_STATUS=42 SNAP_STATUS=9 DISCORD_STATUS=3 update_app fail || status=$?
+if [[ "$status" != 1 ]]; then
+    echo "FAIL: failed app updates returned $status, expected 1" >&2
+    exit 1
+fi
+[[ $(grep -Fxc "$fixture/ubnutu/../discord_notify.py" "$fixture/app-fail.alert") == 1 ]]
+grep -Eq 'apt update.*42' "$fixture/app-fail.alert"
+grep -Eq 'snap refresh.*9' "$fixture/app-fail.alert"
+grep -Fq 'E: Could not resolve packages.example.test' "$fixture/app-fail.alert"
+grep -Fq 'E: Could not resolve packages.example.test' "$fixture/app-fail.stderr"
+grep -Fq 'error: cannot reach' "$fixture/app-fail.stdout"
+grep -Fq 'error: cannot reach https://[redacted]@store.example.test' "$fixture/app-fail.alert"
+if grep -Eq 'example-secret|Codex is up to date' "$fixture/app-fail.alert"; then
+    echo 'FAIL: alert included credentials or output from a successful step' >&2
+    exit 1
+fi
+grep -Fxq 'codex update' "$fixture/app-fail"
+if grep -q 'apt upgrade' "$fixture/app-fail"; then
+    echo 'FAIL: apt upgrade ran after apt update failed' >&2
+    exit 1
+fi
+
+
+# Exercise only the Ubuntu cleanup report, without running any cleanup commands.
+disk_cleanup="$script_dir/ubnutu/ubuntu-disk-cleanup.sh"
+sed -n '/^load_discord_env()/,/^}/p; /^send_discord_report()/,/^}/p; /^DISCORD_MESSAGE=/,$p' \
+    "$disk_cleanup" > "$fixture/ubnutu/disk-report.sh"
+run_disk_report() (
+    unset DISCORD_TOKEN CHANNEL_STATUS CHANNEL_UPDATE
+    export HOME="$fixture/discord-home"
+    TIMESTAMP=2026-11-21 REPORT='cleanup report fixture'
+    log() { printf '%s\n' "$*" >&2; }
+    curl() { echo 'FAIL: cleanup attempted a direct Discord request' >&2; return 1; }
+    python3() {
+        [[ "$1" == "$fixture/ubnutu/../discord_notify.py" && "$2" == --channel &&
+            "$3" == 789 && "$4" == -- && "$DISCORD_TOKEN" == test-discord-token ]] || return 1
+        printf '%s\n' "$5" >> "$fixture/disk-notification"
+    }
+    source "$fixture/ubnutu/disk-report.sh"
+)
+run_disk_report 2> "$fixture/disk-missing-status"
+[[ ! -e "$fixture/disk-notification" ]]
+grep -Fq "상태 채널 ID가 없어 전송을 건너뜀" "$fixture/disk-missing-status"
+printf '%s\n' 'export CHANNEL_STATUS=789' >> "$fixture/discord-home/.discord.env"
+run_disk_report
+grep -Fq 'cleanup report fixture' "$fixture/disk-notification"
+
 echo 'Discord notification checks passed'
