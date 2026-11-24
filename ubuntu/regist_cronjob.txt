@@ -1,0 +1,7 @@
+# ubuntu 사용자의 crontab -e에 아래 내용을 추가합니다. 시간대는 UTC입니다.
+# 앱 업데이트: 매일 오전 8시
+0 8 * * * . "$HOME/.discord.env" && exec /app/cronjob/ubuntu/app-update.sh
+# OCI 비용 리포트: 매일 오전 10시
+0 10 * * * /app/cronjob/ubuntu/daily-oci-cost-report.sh
+# 디스크 정리: 매주 토요일 오전 10시
+0 10 * * 6 /app/cronjob/ubuntu/ubuntu-disk-cleanup.sh
