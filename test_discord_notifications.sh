@@ -48,7 +48,7 @@ if [[ -e "$fixture/sent-success" ]]; then
 fi
 [[ -s "$fixture/sent-error" ]]
 
-cost_report="$script_dir/ubnutu/daily-oci-cost-report.sh"
+cost_report="$script_dir/ubuntu/daily-oci-cost-report.sh"
 source <(sed -n '/^should_notify_discord()/,/^}/p' "$cost_report")
 for pair in '10 10' '19.99 10' '0 10' '10 0' '0 0'; do
     read -r current previous <<< "$pair"
@@ -105,7 +105,7 @@ for current in 19.99 20; do
             fi
         }
         python3() {
-            [[ "$1" == "$script_dir/ubnutu/../discord_notify.py" && "$2" == --channel &&
+            [[ "$1" == "$script_dir/ubuntu/../discord_notify.py" && "$2" == --channel &&
                 "$3" == 123 && "$4" == -- && "$DISCORD_TOKEN" == test-discord-token ]] || return 1
             printf '%s\n' "$5" >> "$fixture/posts-$current"
         }
@@ -119,8 +119,8 @@ grep -Fq 'OCI 일일 비용 리포트' "$fixture/posts-20"
 
 # Exercise app updates with stand-ins for package managers and Discord.
 mkdir "$fixture/bin" "$fixture/ubnutu"
-sed "s|/home/linuxbrew/.linuxbrew/bin/brew|brew|; s|/home/ubuntu/.local/bin/codex|codex|" \
-    "$script_dir/ubnutu/app-update.sh" > "$fixture/ubnutu/app-update.sh"
+sed 's|/home/linuxbrew/.linuxbrew/bin/brew|brew|; s|/home/ubuntu/.local/bin/codex|codex|' \
+    "$script_dir/ubuntu/app-update.sh" > "$fixture/ubnutu/app-update.sh"
 cat > "$fixture/bin/sudo" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TRACE"
@@ -145,8 +145,17 @@ exit 0
 EOF
 cat > "$fixture/bin/codex" <<'EOF'
 #!/bin/sh
-echo 'codex update' >> "$TRACE"
-echo 'Codex is up to date'
+exit 0
+EOF
+cat > "$fixture/bin/curl" <<'EOF'
+#!/bin/sh
+[ "$1" = -fsSL ] && [ "$2" = --output ] &&
+    [ "$4" = https://chatgpt.com/codex/install.sh ] || exit 2
+printf '%s\n' 'echo "Codex installer ran" >> "$TRACE"' 'echo "Codex is up to date"' > "$3"
+if [ "${CURL_STATUS:-0}" -ne 0 ]; then
+    echo 'Codex installer download failed' >&2
+fi
+exit "${CURL_STATUS:-0}"
 EOF
 cat > "$fixture/bin/python3" <<'EOF'
 #!/bin/sh
@@ -162,6 +171,7 @@ update_app() (
 update_app success
 [[ ! -e "$fixture/app-success.alert" ]]
 grep -Fxq 'apt upgrade -y' "$fixture/app-success"
+grep -Fxq 'Codex installer ran' "$fixture/app-success"
 status=0
 APT_STATUS=42 SNAP_STATUS=9 DISCORD_STATUS=3 update_app fail || status=$?
 if [[ "$status" != 1 ]]; then
@@ -179,15 +189,21 @@ if grep -Eq 'example-secret|Codex is up to date' "$fixture/app-fail.alert"; then
     echo 'FAIL: alert included credentials or output from a successful step' >&2
     exit 1
 fi
-grep -Fxq 'codex update' "$fixture/app-fail"
+grep -Fxq 'Codex installer ran' "$fixture/app-fail"
 if grep -q 'apt upgrade' "$fixture/app-fail"; then
     echo 'FAIL: apt upgrade ran after apt update failed' >&2
     exit 1
 fi
+status=0
+CURL_STATUS=22 update_app codex-download-fail || status=$?
+[[ "$status" == 1 ]]
+grep -Eq 'update_codex.*22' "$fixture/app-codex-download-fail.alert"
+grep -Fq 'Codex installer download failed' "$fixture/app-codex-download-fail.alert"
+! grep -Fxq 'Codex installer ran' "$fixture/app-codex-download-fail"
 
 
 # Exercise only the Ubuntu cleanup report, without running any cleanup commands.
-disk_cleanup="$script_dir/ubnutu/ubuntu-disk-cleanup.sh"
+disk_cleanup="$script_dir/ubuntu/ubuntu-disk-cleanup.sh"
 sed -n '/^load_discord_env()/,/^}/p; /^send_discord_report()/,/^}/p; /^DISCORD_MESSAGE=/,$p' \
     "$disk_cleanup" > "$fixture/ubnutu/disk-report.sh"
 run_disk_report() (
